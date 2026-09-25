@@ -687,11 +687,18 @@ interface ThreeDViewProps {
   origin: LatLon | null
   destination: LatLon | null
   route: GeoJSON.LineString | null
+  onMapClick: (point: LatLon) => void
 }
 
-export default function ThreeDView({ timeHour, origin, destination, route }: ThreeDViewProps) {
+export default function ThreeDView({ timeHour, origin, destination, route, onMapClick }: ThreeDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
+  // Read through a ref (rather than closing over the prop directly) inside
+  // the map's 'click' listener below, which is attached once in the
+  // mount-only effect and would otherwise keep calling a stale first-render
+  // version of onMapClick forever — same pattern MapView.tsx uses.
+  const onMapClickRef = useRef(onMapClick)
+  onMapClickRef.current = onMapClick
   const sunLightRef = useRef<THREE.DirectionalLight | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const fetchCenterRef = useRef<LatLon>(KARLSRUHE_CENTER)
@@ -727,6 +734,11 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
   const [cameraMode, setCameraMode] = useState<CameraMode>('fly')
   const [bearing, setBearing] = useState(0)
   const [flythroughActive, setFlythroughActive] = useState(false)
+  // Mirrors flythroughActive for the map's 'click' listener, which is
+  // attached once in the mount-only effect and needs a live read rather
+  // than the value from whatever render it was attached in.
+  const flythroughActiveRef = useRef(false)
+  flythroughActiveRef.current = flythroughActive
   const flythroughRafRef = useRef(0)
   // Tracks which origin/destination pair the last flythrough already played
   // for, so re-fetching the same route (e.g. dragging the shade-preference
@@ -972,6 +984,16 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
     map.on('rotate', () => setBearing(map.getBearing()))
+    // Click-to-pick origin/destination, same behavior as the 2D map — this
+    // view previously had no way to set either point except the sidebar's
+    // text inputs. Ignored during a flythrough (which doesn't disable this
+    // independent 'click' handler the way it disables dragPan/scrollZoom
+    // etc.) so a stray click mid-animation can't reset the route out from
+    // under it.
+    map.on('click', (e: maplibregl.MapMouseEvent) => {
+      if (flythroughActiveRef.current) return
+      onMapClickRef.current({ lat: e.lngLat.lat, lon: e.lngLat.lng })
+    })
 
     const modelAsMercator = maplibregl.MercatorCoordinate.fromLngLat([fetchCenter.lon, fetchCenter.lat], 0)
     const modelScale = modelAsMercator.meterInMercatorCoordinateUnits()

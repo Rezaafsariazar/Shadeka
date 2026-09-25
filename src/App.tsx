@@ -96,6 +96,7 @@ export default function App() {
             origin={origin}
             destination={destination}
             route={route?.geometry ?? null}
+            onMapClick={handleMapClick}
           />
         )}
       </main>
