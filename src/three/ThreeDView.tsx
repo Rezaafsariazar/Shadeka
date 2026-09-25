@@ -403,12 +403,13 @@ const TREE_CROWN_MAX_M = 6
 //    TREE_UNLOAD_RADIUS_M away, so the live tree count stays bounded no
 //    matter how far the camera roams — the gap between load/unload radius
 //    avoids load/unload thrashing right at the boundary
-//  - trees within TREE_LOD_NEAR_M of the fetch center get full detail (trunk
-//    + smooth canopy, both shadow-casting and -receiving); farther ones get
-//    a single low-poly canopy sphere with no trunk and no shadow-receiving,
-//    but it still casts a shadow — measured ~1.4ms/frame added render cost
-//    for ~1800 shadow casters in a dense area, well within budget, so every
-//    visible tree contributes a real shadow instead of only the near ~150m
+//  - every tree gets a trunk; trees within TREE_LOD_NEAR_M of the fetch
+//    center additionally get a smoother canopy (+ a second lobe) that
+//    receives shadows, while farther ones get a coarser low-poly canopy
+//    with no shadow-receiving — but it still casts a shadow, measured
+//    ~1.4ms/frame added render cost for ~1800 shadow casters in a dense
+//    area, well within budget, so every visible tree contributes a real
+//    shadow instead of only the near ~150m
 const TREE_LOAD_RADIUS_M = 500
 const TREE_UNLOAD_RADIUS_M = 900
 const TREE_REFETCH_MOVE_M = 150
@@ -544,11 +545,12 @@ function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: numbe
 }
 
 /**
- * Build one tree's group at its real position/height_m/crown_radius_m.
- * `highDetail` trees (near the camera) get a trunk + a smooth sphere canopy
- * that both casts and receives shadows; distant trees get just a single
- * low-poly canopy sphere (no trunk, doesn't receive shadows), but it still
- * casts one, so every visible tree contributes real shade regardless of LOD.
+ * Build one tree's group at its real position/height_m/crown_radius_m. Every
+ * tree gets a trunk. `highDetail` trees (near the camera) additionally get a
+ * smoother, higher-poly canopy (plus a second lobe) that receives shadows;
+ * distant trees get a coarser low-poly canopy that doesn't receive shadows,
+ * but it still casts one, so every visible tree contributes real shade
+ * regardless of LOD.
  */
 function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatLon, highDetail: boolean): THREE.Group | null {
   const rawHeight = feature.properties?.height_m
@@ -570,17 +572,20 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
 
   const group = new THREE.Group()
 
-  if (highDetail) {
-    const trunkRadius = Math.max(0.12, crownRadius * 0.08)
-    const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, 8)
-    trunkGeometry.rotateX(Math.PI / 2)
-    trunkGeometry.translate(0, 0, trunkHeight / 2)
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 1 })
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial)
-    trunk.castShadow = true
-    trunk.receiveShadow = true
-    group.add(trunk)
-  }
+  // Every tree gets a trunk, not just near/high-detail ones — a cylinder
+  // this simple costs almost nothing to draw, and without one, distant
+  // trees (most of what's on screen at any given moment) read as a
+  // levitating green blob rather than an actual tree.
+  const trunkRadius = Math.max(0.12, crownRadius * 0.08)
+  const trunkSegments = highDetail ? 8 : 5
+  const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, trunkSegments)
+  trunkGeometry.rotateX(Math.PI / 2)
+  trunkGeometry.translate(0, 0, trunkHeight / 2)
+  const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 1 })
+  const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial)
+  trunk.castShadow = true
+  trunk.receiveShadow = highDetail
+  group.add(trunk)
 
   // A squashed sphere reads as a rounded foliage volume far better than a
   // sharp cone, which flattens into a triangle silhouette from most angles —
