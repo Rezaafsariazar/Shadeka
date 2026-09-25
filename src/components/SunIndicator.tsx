@@ -1,8 +1,9 @@
 import * as SunCalc from 'suncalc'
-import { isoAtHour, type LatLon } from '../lib/api'
+import type { LatLon } from '../lib/api'
+import { useDisplayTime } from '../hooks/useTime'
+import { dateAtMinutes } from '../lib/time'
 
 interface SunIndicatorProps {
-  timeHour: number
   bearing: number
   center: LatLon
 }
@@ -21,8 +22,10 @@ function compassLabel(azimuthDeg: number): string {
 // SunCalc.getPosition returns altitude/azimuth already in degrees, azimuth
 // clockwise from north (verified against the installed v2.0.1 README) — no
 // radians conversion needed here, unlike the classic suncalc.js API.
-export default function SunIndicator({ timeHour, bearing, center }: SunIndicatorProps) {
-  const date = new Date(isoAtHour(timeHour))
+export default function SunIndicator({ bearing, center }: SunIndicatorProps) {
+  // Follows the same smoothed time as the 3D sun and 2D shadows, so the dot
+  // glides in sync with them instead of jumping on each slider step.
+  const date = dateAtMinutes(useDisplayTime())
   const { altitude, azimuth } = SunCalc.getPosition(date, center.lat, center.lon)
   const isUp = altitude > 0
 
@@ -51,7 +54,7 @@ export default function SunIndicator({ timeHour, bearing, center }: SunIndicator
             N
           </span>
           <div
-            className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top,opacity] duration-300"
+            className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full transition-opacity duration-300"
             style={{
               left: dotX,
               top: dotY,

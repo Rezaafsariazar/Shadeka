@@ -165,12 +165,6 @@ export async function geocodeAddress(query: string): Promise<GeocodeResult[]> {
   }))
 }
 
-export function isoAtHour(hour: number): string {
-  const now = new Date()
-  now.setHours(hour, 0, 0, 0)
-  return now.toISOString()
-}
-
 export interface WeatherSnapshot {
   temperatureC: number
   cloudCoverPct: number

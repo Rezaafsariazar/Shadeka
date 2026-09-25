@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GeocodeResult, LatLon, RouteResponse, WeatherSnapshot } from '../lib/api'
 import { geocodeAddress } from '../lib/api'
 import { buildTurnByTurn } from '../lib/directions'
+import { formatMinutes } from '../lib/time'
+import TimeControl from './TimeControl'
 
 interface SidebarProps {
   origin: LatLon | null
@@ -10,8 +12,8 @@ interface SidebarProps {
   onDestinationChange: (value: LatLon | null) => void
   shadePref: number
   onShadePrefChange: (value: number) => void
-  timeHour: number
-  onTimeHourChange: (value: number) => void
+  /** Time the current route/weather data was fetched for (not the live slider value). */
+  settledMinutes: number
   route: RouteResponse | null
   loading: boolean
   error: string | null
@@ -30,12 +32,6 @@ interface SidebarProps {
 // suncalc-driven sun position) — this is the cutoff above which that
 // assumption is misleading enough to call out explicitly.
 const HEAVY_CLOUD_THRESHOLD_PCT = 60
-
-function formatHour(hour: number): string {
-  const h = Math.floor(hour)
-  const m = Math.round((hour - h) * 60)
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
 
 function formatCoords(value: LatLon | null): string {
   return value ? `${value.lat.toFixed(5)}, ${value.lon.toFixed(5)}` : ''
@@ -246,8 +242,7 @@ export default function Sidebar({
   onDestinationChange,
   shadePref,
   onShadePrefChange,
-  timeHour,
-  onTimeHourChange,
+  settledMinutes,
   route,
   loading,
   error,
@@ -270,7 +265,7 @@ export default function Sidebar({
     onDestinationChange(prevOrigin)
   }
 
-  const steps = route ? buildTurnByTurn(route.geometry) : []
+  const steps = useMemo(() => (route ? buildTurnByTurn(route.geometry) : []), [route])
 
   return (
     <aside
@@ -373,30 +368,12 @@ export default function Sidebar({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between text-sm">
-          <span className="font-medium text-slate-700">Time of day</span>
-          <span className="text-xs text-slate-400">{formatHour(timeHour)}</span>
-        </div>
-        <input
-          type="range"
-          min={6}
-          max={21}
-          step={0.5}
-          value={timeHour}
-          onChange={(e) => onTimeHourChange(Number(e.target.value))}
-          className="accent-teal-500"
-        />
-        <div className="flex justify-between text-xs text-slate-400">
-          <span>06:00</span>
-          <span>21:00</span>
-        </div>
-      </div>
+      <TimeControl />
 
       <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-sm font-medium text-slate-700">Real weather at {formatHour(timeHour)}</span>
+            <span className="text-sm font-medium text-slate-700">Real weather at {formatMinutes(settledMinutes)}</span>
             <p className="text-xs text-slate-400">
               Shade above assumes a clear sky — check today's actual forecast for this time.
             </p>
@@ -468,7 +445,7 @@ export default function Sidebar({
         </button>
       </div>
 
-      {loading && (
+      {loading && !route && (
         <div className="rounded-xl border border-slate-100 bg-white p-4 text-sm text-slate-500 shadow-sm">
           Finding route…
         </div>
@@ -480,9 +457,15 @@ export default function Sidebar({
         </div>
       )}
 
-      {route && !loading && !error && (
+      {/* Refetches (time, preference) keep the previous result on screen and
+          just flag it as updating, instead of swapping it for a loader and
+          shifting the whole panel on every change. */}
+      {route && !error && (
         <div className="flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
-          <span className="text-sm font-medium text-slate-700">Route summary</span>
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-slate-700">Route summary</span>
+            {loading && <span className="text-xs text-slate-500">Updating…</span>}
+          </div>
           <div className="grid grid-cols-3 gap-2 text-center">
             <div className="rounded-lg bg-slate-50 py-2.5">
               <div className="text-base font-semibold text-slate-900">
@@ -506,7 +489,7 @@ export default function Sidebar({
         </div>
       )}
 
-      {route && !loading && !error && steps.length > 0 && (
+      {route && !error && steps.length > 0 && (
         <div className="flex flex-col gap-1 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
           <span className="mb-1 text-sm font-medium text-slate-700">Directions</span>
           <ol className="flex flex-col divide-y divide-slate-100">

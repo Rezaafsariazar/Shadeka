@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
-import { fetchTransitNearby, type LatLon, type TransitVehicle } from '../lib/api'
+import * as SunCalc from 'suncalc'
+import { fetchBuildingsNearby, fetchTransitNearby, type LatLon, type TransitVehicle } from '../lib/api'
+import { dateAtMinutes } from '../lib/time'
+import { timeStore } from '../lib/timeStore'
+import { createBuildingShadowLayer } from '../map/buildingShadowLayer'
 import SunIndicator from './SunIndicator'
 
 const KARLSRUHE_CENTER: [number, number] = [8.4037, 49.0069]
@@ -25,6 +29,21 @@ type TransitFeatureProperties = { journey_ref: string; mode: string; bearing: nu
 
 const TRANSIT_ICON_TRAM = 'transit-arrow-tram'
 const TRANSIT_ICON_RAIL = 'transit-arrow-rail'
+
+// Building shadows only below this zoom would mean fetching most of the city;
+// at 15 the view is ~2km across, still a bounded /buildings-nearby request.
+const SHADOW_MIN_ZOOM = 15
+const SHADOW_FETCH_MIN_RADIUS_M = 300
+const SHADOW_FETCH_MAX_RADIUS_M = 900
+// Past this many loaded buildings, drop the ones far from the current view.
+const SHADOW_MAX_BUILDINGS = 20000
+const SHADOW_KEEP_RADIUS_M = 2500
+
+function distanceMeters(a: LatLon, b: LatLon): number {
+  const dx = (b.lon - a.lon) * 111320 * Math.cos((a.lat * Math.PI) / 180)
+  const dy = (b.lat - a.lat) * 111320
+  return Math.hypot(dx, dy)
+}
 
 /** A filled triangle pointing straight up (north) at 0 rotation, so icon-rotate
  * (compass degrees clockwise from north) points it in the vehicle's real
@@ -146,18 +165,22 @@ interface MapViewProps {
   origin: LatLon | null
   destination: LatLon | null
   route: GeoJSON.LineString | null
-  timeHour: number
   onMapClick: (point: LatLon) => void
 }
 
-export default function MapView({ origin, destination, route, timeHour, onMapClick }: MapViewProps) {
+export default function MapView({ origin, destination, route, onMapClick }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const originMarkerRef = useRef<maplibregl.Marker | null>(null)
   const destMarkerRef = useRef<maplibregl.Marker | null>(null)
   const onMapClickRef = useRef(onMapClick)
   onMapClickRef.current = onMapClick
+  // Endpoints of the last route the camera was fitted to. Re-fetching the
+  // same origin/destination (time or preference changes) returns a route
+  // with the same endpoints and must not yank the camera around again.
+  const lastFittedRouteKeyRef = useRef<string | null>(null)
   const [bearing, setBearing] = useState(0)
+  const [shadowZoomHint, setShadowZoomHint] = useState(true)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -177,6 +200,60 @@ export default function MapView({ origin, destination, route, timeHour, onMapCli
     map.on('click', (e: maplibregl.MapMouseEvent) => {
       onMapClickRef.current({ lat: e.lngLat.lat, lon: e.lngLat.lng })
     })
+
+    const shadows = createBuildingShadowLayer(KARLSRUHE_CENTER_LATLON)
+
+    // Shadows follow the shared smoothed time every frame it changes — a
+    // uniform update in the layer, no React re-render.
+    const applySun = () => {
+      const { altitude, azimuth } = SunCalc.getPosition(
+        dateAtMinutes(timeStore.getDisplay()),
+        KARLSRUHE_CENTER_LATLON.lat,
+        KARLSRUHE_CENTER_LATLON.lon,
+      )
+      shadows.setSun(altitude, azimuth)
+    }
+    const unsubscribeTime = timeStore.subscribeDisplay(applySun)
+
+    let lastShadowFetch: { center: LatLon; radius: number } | null = null
+    let shadowFetchInFlight = false
+    let disposed = false
+    const loadShadowBuildings = () => {
+      if (disposed) return
+      const zoomedIn = map.getZoom() >= SHADOW_MIN_ZOOM
+      setShadowZoomHint(!zoomedIn)
+      if (!zoomedIn || shadowFetchInFlight) return
+
+      const c = map.getCenter()
+      const center: LatLon = { lat: c.lat, lon: c.lng }
+      const ne = map.getBounds().getNorthEast()
+      const halfDiagonal = distanceMeters(center, { lat: ne.lat, lon: ne.lng })
+      const radius = Math.min(SHADOW_FETCH_MAX_RADIUS_M, Math.max(SHADOW_FETCH_MIN_RADIUS_M, halfDiagonal + 100))
+      if (
+        lastShadowFetch &&
+        lastShadowFetch.radius >= radius &&
+        distanceMeters(lastShadowFetch.center, center) < lastShadowFetch.radius * 0.4
+      ) {
+        return
+      }
+
+      shadowFetchInFlight = true
+      fetchBuildingsNearby(center, radius)
+        .then((data) => {
+          shadowFetchInFlight = false
+          if (disposed) return
+          lastShadowFetch = { center, radius }
+          shadows.addBuildings(data.features)
+          if (shadows.size() > SHADOW_MAX_BUILDINGS) shadows.pruneFarFrom(center, SHADOW_KEEP_RADIUS_M)
+          // The view may have moved while this was in flight (its moveend
+          // was skipped above); catch up now that the request is done.
+          loadShadowBuildings()
+        })
+        .catch((err) => {
+          shadowFetchInFlight = false
+          console.error('Failed to load buildings for shadows', err)
+        })
+    }
 
     map.on('load', () => {
       map.addSource(ROUTE_SOURCE_ID, {
@@ -229,9 +306,19 @@ export default function MapView({ origin, destination, route, timeHour, onMapCli
           'icon-size': 0.85,
         },
       })
+
+      // Below the base style's buildings (so shadows fall on streets and
+      // ground, not roofs) and below the route line.
+      const firstBuildingLayer = map.getStyle().layers.find((l) => l.id.toLowerCase().includes('building'))
+      map.addLayer(shadows.layer, firstBuildingLayer?.id ?? ROUTE_LAYER_ID)
+      applySun()
+      loadShadowBuildings()
     })
+    map.on('moveend', loadShadowBuildings)
 
     return () => {
+      disposed = true
+      unsubscribeTime()
       map.remove()
       mapRef.current = null
     }
@@ -287,11 +374,17 @@ export default function MapView({ origin, destination, route, timeHour, onMapCli
       )
       if (route) {
         const coords = route.coordinates as [number, number][]
-        const bounds = coords.reduce(
-          (b, c) => b.extend(c),
-          new maplibregl.LngLatBounds(coords[0], coords[0]),
-        )
-        map.fitBounds(bounds, { padding: 80, maxZoom: 17, duration: 500 })
+        const first = coords[0]
+        const last = coords[coords.length - 1]
+        const key = `${first[0].toFixed(5)},${first[1].toFixed(5)}|${last[0].toFixed(5)},${last[1].toFixed(5)}`
+        if (key !== lastFittedRouteKeyRef.current) {
+          lastFittedRouteKeyRef.current = key
+          const bounds = coords.reduce(
+            (b, c) => b.extend(c),
+            new maplibregl.LngLatBounds(coords[0], coords[0]),
+          )
+          map.fitBounds(bounds, { padding: 80, maxZoom: 17, duration: 500 })
+        }
       }
     }
 
@@ -424,8 +517,13 @@ export default function MapView({ origin, destination, route, timeHour, onMapCli
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       <div className="absolute left-4 top-4 z-10">
-        <SunIndicator timeHour={timeHour} bearing={bearing} center={KARLSRUHE_CENTER_LATLON} />
+        <SunIndicator bearing={bearing} center={KARLSRUHE_CENTER_LATLON} />
       </div>
+      {shadowZoomHint && (
+        <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full bg-slate-900/80 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur">
+          Zoom in to see building shadows
+        </div>
+      )}
     </div>
   )
 }

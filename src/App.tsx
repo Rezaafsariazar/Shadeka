@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import ThreeDView from './three/ThreeDView'
-import { fetchRoute, fetchWeatherAtHour, isoAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
+import { fetchRoute, fetchWeatherAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
+import { isoAtMinutes } from './lib/time'
+import { useSettledTime } from './hooks/useTime'
+import { useDebouncedValue } from './hooks/useDebouncedValue'
 
 const KARLSRUHE_CENTER: LatLon = { lat: 49.0069, lon: 8.4037 }
 
@@ -14,7 +17,11 @@ export default function App() {
   const [origin, setOrigin] = useState<LatLon | null>(null)
   const [destination, setDestination] = useState<LatLon | null>(null)
   const [shadePref, setShadePref] = useState(50)
-  const [timeHour, setTimeHour] = useState(14)
+  // The live time of day lives in timeStore (see lib/timeStore.ts) so the
+  // slider, sun and shadows update every frame without re-rendering the app.
+  // Network work only follows the settled value.
+  const settledMinutes = useSettledTime()
+  const debouncedShadePref = useDebouncedValue(shadePref, 300)
   const [pickMode, setPickMode] = useState<'origin' | 'destination' | null>('origin')
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
 
@@ -48,31 +55,30 @@ export default function App() {
       return
     }
 
+    // Time and preference are already debounced/settled above, so this runs
+    // once per settled change, not once per slider tick.
     let cancelled = false
     setLoading(true)
     setError(null)
 
-    const timer = setTimeout(() => {
-      fetchRoute(origin, destination, shadePref, isoAtHour(timeHour))
-        .then((data) => {
-          if (!cancelled) setRoute(data)
-        })
-        .catch((err: Error) => {
-          if (!cancelled) {
-            setRoute(null)
-            setError(err.message)
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false)
-        })
-    }, 300)
+    fetchRoute(origin, destination, debouncedShadePref, isoAtMinutes(settledMinutes))
+      .then((data) => {
+        if (!cancelled) setRoute(data)
+      })
+      .catch((err: Error) => {
+        if (!cancelled) {
+          setRoute(null)
+          setError(err.message)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
 
     return () => {
       cancelled = true
-      clearTimeout(timer)
     }
-  }, [origin, destination, shadePref, timeHour])
+  }, [origin, destination, debouncedShadePref, settledMinutes])
 
   useEffect(() => {
     if (!showWeather) return
@@ -83,7 +89,7 @@ export default function App() {
     function load() {
       setWeatherLoading(true)
       setWeatherError(null)
-      fetchWeatherAtHour(point, timeHour)
+      fetchWeatherAtHour(point, settledMinutes / 60)
         .then((data) => {
           if (!cancelled) setWeather(data)
         })
@@ -95,9 +101,7 @@ export default function App() {
         })
     }
 
-    // Debounced like the route fetch above — dragging the time slider fires
-    // this on every step, and there's no need to refetch the whole day's
-    // hourly forecast for each intermediate value.
+    // Short debounce so a burst of origin changes (swap, typing) coalesces.
     const timer = setTimeout(load, 300)
     const interval = setInterval(load, WEATHER_REFRESH_MS)
     return () => {
@@ -105,7 +109,7 @@ export default function App() {
       clearTimeout(timer)
       clearInterval(interval)
     }
-  }, [showWeather, origin, timeHour])
+  }, [showWeather, origin, settledMinutes])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -116,8 +120,7 @@ export default function App() {
         onDestinationChange={setDestination}
         shadePref={shadePref}
         onShadePrefChange={setShadePref}
-        timeHour={timeHour}
-        onTimeHourChange={setTimeHour}
+        settledMinutes={settledMinutes}
         route={route}
         loading={loading}
         error={error}
@@ -137,12 +140,10 @@ export default function App() {
             origin={origin}
             destination={destination}
             route={route?.geometry ?? null}
-            timeHour={timeHour}
             onMapClick={handleMapClick}
           />
         ) : (
           <ThreeDView
-            timeHour={timeHour}
             origin={origin}
             destination={destination}
             route={route?.geometry ?? null}
