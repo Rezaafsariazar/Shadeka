@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import ThreeDView from './three/ThreeDView'
-import { fetchRoute, isoAtHour, type LatLon, type RouteResponse } from './lib/api'
+import { fetchRoute, fetchWeatherAtHour, isoAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
+
+const KARLSRUHE_CENTER: LatLon = { lat: 49.0069, lon: 8.4037 }
+
+// Real weather is refreshed on this interval while the toggle is on — no
+// point polling more often than a weather API's own data actually changes.
+const WEATHER_REFRESH_MS = 15 * 60 * 1000
 
 export default function App() {
   const [origin, setOrigin] = useState<LatLon | null>(null)
@@ -15,6 +21,11 @@ export default function App() {
   const [route, setRoute] = useState<RouteResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const [showWeather, setShowWeather] = useState(false)
+  const [weather, setWeather] = useState<WeatherSnapshot | null>(null)
+  const [weatherLoading, setWeatherLoading] = useState(false)
+  const [weatherError, setWeatherError] = useState<string | null>(null)
 
   function handleMapClick(point: LatLon) {
     if (pickMode === 'origin') {
@@ -63,6 +74,39 @@ export default function App() {
     }
   }, [origin, destination, shadePref, timeHour])
 
+  useEffect(() => {
+    if (!showWeather) return
+
+    const point = origin ?? KARLSRUHE_CENTER
+    let cancelled = false
+
+    function load() {
+      setWeatherLoading(true)
+      setWeatherError(null)
+      fetchWeatherAtHour(point, timeHour)
+        .then((data) => {
+          if (!cancelled) setWeather(data)
+        })
+        .catch((err: Error) => {
+          if (!cancelled) setWeatherError(err.message)
+        })
+        .finally(() => {
+          if (!cancelled) setWeatherLoading(false)
+        })
+    }
+
+    // Debounced like the route fetch above — dragging the time slider fires
+    // this on every step, and there's no need to refetch the whole day's
+    // hourly forecast for each intermediate value.
+    const timer = setTimeout(load, 300)
+    const interval = setInterval(load, WEATHER_REFRESH_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      clearInterval(interval)
+    }
+  }, [showWeather, origin, timeHour])
+
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       <Sidebar
@@ -81,6 +125,11 @@ export default function App() {
         onPickModeChange={setPickMode}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        showWeather={showWeather}
+        onShowWeatherChange={setShowWeather}
+        weather={weather}
+        weatherLoading={weatherLoading}
+        weatherError={weatherError}
       />
       <main className="relative flex-1">
         {viewMode === '2d' ? (
