@@ -176,6 +176,62 @@ function createShadowReceivingFlatMaterial(color: THREE.Color): THREE.MeshBasicM
   return material
 }
 
+// A tileable facade texture (light wall + a grid of blue-tinted window
+// panes, a handful lit warm-white) generated once on a canvas and reused
+// (cloned per building so each can set its own .repeat) rather than a flat
+// paint color — reads as an actual building facade instead of a plain
+// extruded block, the same "windowed low-poly city" look tools like
+// Mapbox's own city visualizations use. Built lazily (not at module load)
+// since it needs `document`, unavailable during SSR/tests.
+let cachedFacadeTexture: THREE.Texture | null = null
+function getBuildingFacadeTexture(): THREE.Texture {
+  if (cachedFacadeTexture) return cachedFacadeTexture
+
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = '#e6e0d3'
+    ctx.fillRect(0, 0, size, size)
+
+    const cols = 4
+    const rows = 5
+    const cellW = size / cols
+    const cellH = size / rows
+    const marginX = cellW * 0.16
+    const marginY = cellH * 0.2
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cellW + marginX
+        const y = r * cellH + marginY
+        const w = cellW - marginX * 2
+        const h = cellH - marginY * 2
+        const lit = Math.random() < 0.12
+        ctx.fillStyle = lit
+          ? 'rgba(255, 227, 168, 0.9)'
+          : `rgba(${132 + Math.random() * 20}, ${162 + Math.random() * 15}, ${183 + Math.random() * 15}, ${0.6 + Math.random() * 0.25})`
+        ctx.fillRect(x, y, w, h)
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.colorSpace = THREE.SRGBColorSpace
+  cachedFacadeTexture = texture
+  return texture
+}
+
+// Real-world size (meters) one tile of the facade texture above should
+// cover, so window rows/columns come out roughly floor-height/bay-width
+// regardless of a building's actual footprint size, rather than stretching
+// a fixed number of tiles across every wall no matter how big it is.
+const FACADE_TILE_WIDTH_M = 6
+const FACADE_TILE_HEIGHT_M = 3.2
+
 /** Extrude one building footprint (a single polygon's rings, already in local meters) to its real height. */
 function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, origin: LatLon): THREE.Mesh | null {
   if (rings.length === 0 || rings[0].length < 3) return null
@@ -185,7 +241,8 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
     return new THREE.Vector2(x, y)
   }
 
-  const shape = new THREE.Shape(rings[0].map(toLocal))
+  const outerRing = rings[0].map(toLocal)
+  const shape = new THREE.Shape(outerRing)
   for (let i = 1; i < rings.length; i++) {
     if (rings[i].length < 3) continue
     shape.holes.push(new THREE.Path(rings[i].map(toLocal)))
@@ -213,8 +270,22 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
   // createShadowReceivingFlatMaterial) rather than a plain MeshBasicMaterial,
   // so a taller neighbor's shadow still shows when it lands on this roof.
   const capMaterial = createShadowReceivingFlatMaterial(baseColor)
+
+  // Perimeter of the real footprint (in meters, from the same local-meters
+  // points the shape was built from), so the facade texture's repeat count
+  // scales with each building's actual size instead of a fixed tile count
+  // stretching differently across a small kiosk versus a full city block.
+  let perimeterM = 0
+  for (let i = 0; i < outerRing.length; i++) {
+    perimeterM += outerRing[i].distanceTo(outerRing[(i + 1) % outerRing.length])
+  }
+  const facadeTexture = getBuildingFacadeTexture().clone()
+  facadeTexture.needsUpdate = true
+  facadeTexture.repeat.set(Math.max(1, perimeterM / FACADE_TILE_WIDTH_M), Math.max(1, heightM / FACADE_TILE_HEIGHT_M))
+
   const wallMaterial = new THREE.MeshStandardMaterial({
     color: baseColor,
+    map: facadeTexture,
     // The dim ambient/hemisphere fill that makes ground shadows read clearly
     // (see createSunLight) also means a wall facing away from the sun gets
     // almost no light at all, so it renders as flat neutral gray instead of
@@ -224,7 +295,7 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
     // just darker, without touching the scene-wide ambient (which would
     // wash out the ground shadows again).
     emissive: baseColor,
-    emissiveIntensity: 0.15,
+    emissiveIntensity: 0.1,
     roughness: 0.85,
     metalness: 0.03,
   })
