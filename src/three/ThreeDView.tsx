@@ -44,9 +44,16 @@ const LOOK_SENSITIVITY = 0.15
 // manually. Speed/duration are derived from the route's real length (a short
 // route shouldn't take as long as a cross-town one), clamped so neither a
 // tiny nor a very long route makes for an awkward clip.
-const FLYTHROUGH_TARGET_SPEED_M_S = 14
-const FLYTHROUGH_MIN_DURATION_S = 4
-const FLYTHROUGH_MAX_DURATION_S = 22
+// FLYTHROUGH_MAX_DURATION_S used to cap most real routes well short of what
+// FLYTHROUGH_TARGET_SPEED_M_S implied (a 1.4km route: ~101s at 14 m/s, but
+// clamped to 22s — an effective ~64 m/s/230 km/h, which is what actually
+// read as "too fast", not the bearing smoothing tuned in an earlier pass).
+// Raised the cap and lowered the target speed so typical urban routes (up
+// to ~1km) fly at close to the real target pace instead of being crushed
+// into a fixed-length clip.
+const FLYTHROUGH_TARGET_SPEED_M_S = 9
+const FLYTHROUGH_MIN_DURATION_S = 5
+const FLYTHROUGH_MAX_DURATION_S = 45
 const FLYTHROUGH_PITCH = 58
 // Noticeably closer than the initial map zoom (17) — the earlier flythrough
 // left zoom untouched, which read as a distant, wide view of the route
