@@ -524,6 +524,15 @@ function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.Hemisphe
   // higher map resolution above so edges read as "soft" without dissolving
   // into a barely-visible haze.
   light.shadow.radius = 1.5
+  // OrthographicCamera's left/right/top/bottom/near/far are plain
+  // properties — three.js only rebuilds the actual projection matrix used
+  // at render time when updateProjectionMatrix() is called. Without this,
+  // the shadow camera silently keeps DirectionalLightShadow's constructor
+  // default frustum (a ±5m box, near 0.5/far 500) no matter what the lines
+  // above set it to, so only geometry within a few meters of the light's
+  // target would ever land inside the shadow map — every farther building
+  // and tree would render with no shadow at all.
+  light.shadow.camera.updateProjectionMatrix()
 
   // HemisphereLight blends sky/ground color by the angle between a surface
   // normal and the light's position vector, so it needs a non-zero position
@@ -982,6 +991,10 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
         // just leaving the frustum's XY bounds.
         sunDistanceRef.current = Math.max(SUN_LIGHT_DISTANCE_MIN_M, halfExtent + 100)
         light.shadow.camera.far = sunDistanceRef.current + halfExtent + 100
+        // Required after touching left/right/top/bottom/far above — see the
+        // matching comment in createSunLight for why the shadow camera would
+        // otherwise silently keep rendering with its previous frustum.
+        light.shadow.camera.updateProjectionMatrix()
         const date = new Date(isoAtHour(animatedHourRef.current))
         updateSunLight(light, date, fetchCenter, sunTargetRef.current, sunDistanceRef.current)
         map.triggerRepaint()
