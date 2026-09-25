@@ -531,10 +531,19 @@ const MARKER_HEAD_RADIUS_M = 7
  * rooftops as a landmark from both free-fly (seen from above) and walk mode
  * (seen from street level). Unlit so it reads clearly as a UI marker
  * regardless of time of day/shadow, same reasoning as the route tube.
+ *
+ * Depth-testing against real geometry is disabled for the same reason it's
+ * disabled on the route tube (see buildRouteMesh): a marker can end up
+ * behind a building from the camera's current angle even though it's the
+ * taller of the two (a tall building's roofline between the camera and a
+ * marker on the far side of it, say) — geometrically correct occlusion, but
+ * wrong for a wayfinding pin, which should always read on top like the 2D
+ * map's own marker icon does. renderOrder is one past the route tube's own
+ * (999) so a marker sitting right at a route endpoint draws in front of it.
  */
 function buildPinMarker(color: number): THREE.Group {
   const group = new THREE.Group()
-  const material = new THREE.MeshBasicMaterial({ color })
+  const material = new THREE.MeshBasicMaterial({ color, depthTest: false })
 
   const coneHeight = MARKER_TOTAL_HEIGHT_M - MARKER_HEAD_RADIUS_M
   // CylinderGeometry(radiusTop, radiusBottom, ...): after the rotateX/translate
@@ -544,11 +553,15 @@ function buildPinMarker(color: number): THREE.Group {
   const coneGeometry = new THREE.CylinderGeometry(MARKER_HEAD_RADIUS_M, 0, coneHeight, 20)
   coneGeometry.rotateX(Math.PI / 2)
   coneGeometry.translate(0, 0, coneHeight / 2)
-  group.add(new THREE.Mesh(coneGeometry, material))
+  const cone = new THREE.Mesh(coneGeometry, material)
+  cone.renderOrder = 1000
+  group.add(cone)
 
   const headGeometry = new THREE.SphereGeometry(MARKER_HEAD_RADIUS_M, 20, 16)
   headGeometry.translate(0, 0, coneHeight)
-  group.add(new THREE.Mesh(headGeometry, material))
+  const head = new THREE.Mesh(headGeometry, material)
+  head.renderOrder = 1000
+  group.add(head)
 
   return group
 }
