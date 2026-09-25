@@ -1,5 +1,7 @@
-import type { LatLon, RouteResponse, ShadeModel } from '../lib/api'
-import TemperatureProfileChart from './TemperatureProfileChart'
+import { useEffect, useRef, useState } from 'react'
+import type { GeocodeResult, LatLon, RouteResponse } from '../lib/api'
+import { geocodeAddress } from '../lib/api'
+import { buildTurnByTurn } from '../lib/directions'
 
 interface SidebarProps {
   origin: LatLon | null
@@ -8,8 +10,6 @@ interface SidebarProps {
   onDestinationChange: (value: LatLon | null) => void
   shadePref: number
   onShadePrefChange: (value: number) => void
-  shadeModel: ShadeModel
-  onShadeModelChange: (value: ShadeModel) => void
   timeHour: number
   onTimeHourChange: (value: number) => void
   route: RouteResponse | null
@@ -27,10 +27,137 @@ function formatHour(hour: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
+function formatCoords(value: LatLon | null): string {
+  return value ? `${value.lat.toFixed(5)}, ${value.lon.toFixed(5)}` : ''
+}
+
+function formatDistance(m: number): string {
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`
+}
+
 function parseLatLon(text: string): LatLon | null {
   const parts = text.split(',').map((p) => Number.parseFloat(p.trim()))
   if (parts.length !== 2 || parts.some((n) => Number.isNaN(n))) return null
   return { lat: parts[0], lon: parts[1] }
+}
+
+function shadePrefLabel(value: number): string {
+  if (value <= 20) return 'Fastest route'
+  if (value <= 40) return 'Mostly fastest'
+  if (value <= 60) return 'Balanced'
+  if (value <= 80) return 'Mostly shadiest'
+  return 'Shadiest route'
+}
+
+/**
+ * Drives one address field's text/suggestions/error state. Kept fully
+ * controlled (rather than the old defaultValue+remount trick) so a selected
+ * geocode result's human-readable label can stay on screen instead of
+ * immediately reformatting back to raw coordinates once the parent's
+ * `value` prop round-trips through onChange.
+ */
+function useAddressField(value: LatLon | null, onChange: (v: LatLon | null) => void) {
+  const [text, setText] = useState(formatCoords(value))
+  const [suggestions, setSuggestions] = useState<GeocodeResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [open, setOpen] = useState(false)
+  // Set right before an onChange we triggered ourselves (selecting a
+  // suggestion, or committing a typed "lat, lon"), so the sync effect below
+  // doesn't stomp our just-set display text when `value` round-trips back.
+  const justSetRef = useRef(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => {
+    if (justSetRef.current) {
+      justSetRef.current = false
+      return
+    }
+    setText(formatCoords(value))
+    setError(null)
+    setSuggestions([])
+  }, [value])
+
+  function handleTextChange(next: string) {
+    setText(next)
+    setError(null)
+    setOpen(true)
+    clearTimeout(debounceRef.current)
+
+    if (parseLatLon(next) || next.trim().length < 3) {
+      setSuggestions([])
+      return
+    }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        setSuggestions(await geocodeAddress(next))
+      } catch {
+        setSuggestions([])
+      } finally {
+        setSearching(false)
+      }
+    }, 350)
+  }
+
+  function selectSuggestion(s: GeocodeResult) {
+    justSetRef.current = true
+    setText(s.label)
+    setSuggestions([])
+    setOpen(false)
+    onChange(s.point)
+  }
+
+  function commit() {
+    setOpen(false)
+    const trimmed = text.trim()
+    if (trimmed.length === 0) {
+      onChange(null)
+      setError(null)
+      return
+    }
+    const parsed = parseLatLon(trimmed)
+    if (parsed) {
+      justSetRef.current = true
+      onChange(parsed)
+      setText(formatCoords(parsed))
+      return
+    }
+    if (suggestions.length > 0) {
+      selectSuggestion(suggestions[0])
+      return
+    }
+    setError('Not found — try a different search, or use Pick to click it on the map.')
+  }
+
+  return { text, suggestions, searching, error, open, setOpen, handleTextChange, selectSuggestion, commit }
+}
+
+function useMyLocation(onLocated: (p: LatLon) => void) {
+  const [locating, setLocating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function locate() {
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported in this browser.')
+      return
+    }
+    setLocating(true)
+    setError(null)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false)
+        onLocated({ lat: pos.coords.latitude, lon: pos.coords.longitude })
+      },
+      () => {
+        setLocating(false)
+        setError('Could not get your location — check browser permissions.')
+      },
+      { enableHighAccuracy: true, timeout: 8000 },
+    )
+  }
+
+  return { locate, locating, error }
 }
 
 function CoordInput({
@@ -48,35 +175,56 @@ function CoordInput({
   active: boolean
   onPick: () => void
 }) {
+  const { text, suggestions, searching, error, open, setOpen, handleTextChange, selectSuggestion, commit } =
+    useAddressField(value, onChange)
+
   return (
-    <div className="flex items-center gap-2">
-      <span
-        className="h-2.5 w-2.5 shrink-0 rounded-full"
-        style={{ backgroundColor: color }}
-      />
-      <input
-        type="text"
-        placeholder={`${label} (lat, lon)`}
-        defaultValue={value ? `${value.lat.toFixed(5)}, ${value.lon.toFixed(5)}` : ''}
-        key={value ? `${value.lat},${value.lon}` : label}
-        onBlur={(e) => onChange(parseLatLon(e.target.value))}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-        }}
-        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:ring-2 focus:ring-teal-100"
-      />
-      <button
-        type="button"
-        onClick={onPick}
-        title={`Click map to set ${label.toLowerCase()}`}
-        className={`shrink-0 rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors ${
-          active
-            ? 'border-teal-500 bg-teal-500 text-white'
-            : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
-        }`}
-      >
-        Pick
-      </button>
+    <div className="relative flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+        <input
+          type="text"
+          placeholder={`${label} — address or lat, lon`}
+          value={text}
+          onChange={(e) => handleTextChange(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(commit, 120)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+          }}
+          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:ring-2 focus:ring-teal-100"
+        />
+        <button
+          type="button"
+          onClick={onPick}
+          title={`Click map to set ${label.toLowerCase()}`}
+          className={`shrink-0 rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors ${
+            active
+              ? 'border-teal-500 bg-teal-500 text-white'
+              : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+          }`}
+        >
+          Pick
+        </button>
+      </div>
+      {error && <p className="pl-4 text-xs text-rose-500">{error}</p>}
+      {searching && !error && <p className="pl-4 text-xs text-slate-400">Searching…</p>}
+      {open && suggestions.length > 0 && (
+        <ul className="absolute left-0 right-0 top-full z-30 mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white text-sm shadow-lg">
+          {suggestions.map((s) => (
+            <li key={s.label}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => selectSuggestion(s)}
+                className="block w-full truncate px-3 py-2 text-left hover:bg-slate-50"
+              >
+                {s.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -88,8 +236,6 @@ export default function Sidebar({
   onDestinationChange,
   shadePref,
   onShadePrefChange,
-  shadeModel,
-  onShadeModelChange,
   timeHour,
   onTimeHourChange,
   route,
@@ -100,9 +246,33 @@ export default function Sidebar({
   viewMode,
   onViewModeChange,
 }: SidebarProps) {
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const { locate, locating, error: locationError } = useMyLocation(onOriginChange)
+
+  function handleSwap() {
+    const prevOrigin = origin
+    onOriginChange(destination)
+    onDestinationChange(prevOrigin)
+  }
+
+  const steps = route ? buildTurnByTurn(route.geometry) : []
+
   return (
-    <aside className="z-10 flex h-full w-[380px] shrink-0 flex-col gap-5 overflow-y-auto bg-white/95 p-5 shadow-xl backdrop-blur">
-      <header className="-mx-5 -mt-5 flex items-center gap-3.5 border-b border-slate-100 bg-gradient-to-br from-teal-50 via-white to-amber-50/60 px-5 py-4">
+    <aside
+      className={`fixed inset-x-0 bottom-0 z-20 flex w-full flex-col gap-5 overflow-y-auto rounded-t-2xl bg-white/95 p-5 pt-2 shadow-xl backdrop-blur transition-[max-height] duration-300 ease-out md:static md:h-full md:max-h-none md:w-[380px] md:shrink-0 md:rounded-none md:pt-5 ${
+        mobileOpen ? 'max-h-[85vh]' : 'max-h-28'
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => setMobileOpen((v) => !v)}
+        aria-label={mobileOpen ? 'Collapse panel' : 'Expand panel'}
+        className="flex items-center justify-center py-1 md:hidden"
+      >
+        <span className="h-1.5 w-10 rounded-full bg-slate-300" />
+      </button>
+
+      <header className="-mx-5 -mt-2 flex items-center gap-3.5 border-b border-slate-100 bg-gradient-to-br from-teal-50 via-white to-amber-50/60 px-5 py-4 md:-mt-5">
         <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-teal-600 shadow-md shadow-teal-500/25">
           <svg viewBox="0 0 32 32" className="h-8 w-8" fill="none" aria-hidden="true">
             <ellipse cx="16" cy="26" rx="9" ry="2.6" fill="white" fillOpacity="0.3" />
@@ -121,7 +291,7 @@ export default function Sidebar({
         </div>
       </header>
 
-      <div className="flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <CoordInput
           label="Origin"
           color="#14b8a6"
@@ -130,6 +300,30 @@ export default function Sidebar({
           active={pickMode === 'origin'}
           onPick={() => onPickModeChange(pickMode === 'origin' ? null : 'origin')}
         />
+        <div className="flex items-center gap-2 pl-4">
+          <button
+            type="button"
+            onClick={locate}
+            className="text-xs font-medium text-teal-600 hover:text-teal-700 disabled:opacity-50"
+            disabled={locating}
+          >
+            {locating ? 'Locating…' : '📍 Use my current location'}
+          </button>
+        </div>
+        {locationError && <p className="pl-4 text-xs text-rose-500">{locationError}</p>}
+
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={handleSwap}
+            disabled={!origin && !destination}
+            title="Swap origin and destination"
+            className="rounded-full border border-slate-200 bg-white p-1 text-sm leading-none text-slate-500 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-40"
+          >
+            ⇅
+          </button>
+        </div>
+
         <CoordInput
           label="Destination"
           color="#fb7185"
@@ -148,7 +342,7 @@ export default function Sidebar({
       <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between text-sm">
           <span className="font-medium text-slate-700">Route preference</span>
-          <span className="text-xs text-slate-400">{shadePref}</span>
+          <span className="text-xs font-medium text-teal-600">{shadePrefLabel(shadePref)}</span>
         </div>
         <input
           type="range"
@@ -162,35 +356,6 @@ export default function Sidebar({
           <span>Fastest</span>
           <span>Shadiest</span>
         </div>
-      </div>
-
-      <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
-        <span className="text-sm font-medium text-slate-700">Shade model</span>
-        <div className="flex rounded-lg border border-slate-100 bg-slate-50 p-1">
-          <button
-            type="button"
-            onClick={() => onShadeModelChange('base')}
-            className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-              shadeModel === 'base' ? 'bg-teal-500 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            Standard
-          </button>
-          <button
-            type="button"
-            onClick={() => onShadeModelChange('advanced')}
-            className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-              shadeModel === 'advanced' ? 'bg-teal-500 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            Advanced
-          </button>
-        </div>
-        <p className="text-xs text-slate-400">
-          {shadeModel === 'advanced'
-            ? 'Accounts for lingering heat on recently-sunny streets, not just current shade.'
-            : 'Uses current shade coverage only.'}
-        </p>
       </div>
 
       <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
@@ -272,8 +437,20 @@ export default function Sidebar({
         </div>
       )}
 
-      {route && !loading && !error && route.temperature_profile && shadeModel === 'advanced' && (
-        <TemperatureProfileChart profile={route.temperature_profile} />
+      {route && !loading && !error && steps.length > 0 && (
+        <div className="flex flex-col gap-1 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+          <span className="mb-1 text-sm font-medium text-slate-700">Directions</span>
+          <ol className="flex flex-col divide-y divide-slate-100">
+            {steps.map((step, i) => (
+              <li key={i} className="flex items-baseline justify-between gap-3 py-1.5 text-sm text-slate-600">
+                <span>{step.instruction}</span>
+                {step.distanceM > 0 && (
+                  <span className="shrink-0 text-xs text-slate-400">{formatDistance(step.distanceM)}</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </aside>
   )

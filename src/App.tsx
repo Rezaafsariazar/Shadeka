@@ -2,13 +2,12 @@ import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import ThreeDView from './three/ThreeDView'
-import { fetchRoute, isoAtHour, type LatLon, type RouteResponse, type ShadeModel } from './lib/api'
+import { fetchRoute, isoAtHour, type LatLon, type RouteResponse } from './lib/api'
 
 export default function App() {
   const [origin, setOrigin] = useState<LatLon | null>(null)
   const [destination, setDestination] = useState<LatLon | null>(null)
   const [shadePref, setShadePref] = useState(50)
-  const [shadeModel, setShadeModel] = useState<ShadeModel>('base')
   const [timeHour, setTimeHour] = useState(14)
   const [pickMode, setPickMode] = useState<'origin' | 'destination' | null>('origin')
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
@@ -43,7 +42,7 @@ export default function App() {
     setError(null)
 
     const timer = setTimeout(() => {
-      fetchRoute(origin, destination, shadePref, isoAtHour(timeHour), shadeModel)
+      fetchRoute(origin, destination, shadePref, isoAtHour(timeHour))
         .then((data) => {
           if (!cancelled) setRoute(data)
         })
@@ -62,7 +61,7 @@ export default function App() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [origin, destination, shadePref, shadeModel, timeHour])
+  }, [origin, destination, shadePref, timeHour])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -73,8 +72,6 @@ export default function App() {
         onDestinationChange={setDestination}
         shadePref={shadePref}
         onShadePrefChange={setShadePref}
-        shadeModel={shadeModel}
-        onShadeModelChange={setShadeModel}
         timeHour={timeHour}
         onTimeHourChange={setTimeHour}
         route={route}

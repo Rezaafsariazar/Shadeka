@@ -1012,6 +1012,8 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   const [cameraMode, setCameraMode] = useState<CameraMode>('fly')
   const [bearing, setBearing] = useState(0)
   const [flythroughActive, setFlythroughActive] = useState(false)
+  // 0-1 through the current flythrough, for the progress bar in the overlay.
+  const [flythroughProgress, setFlythroughProgress] = useState(0)
   // Mirrors flythroughActive for the map's 'click' listener, which is
   // attached once in the mount-only effect and needs a live read rather
   // than the value from whatever render it was attached in.
@@ -1022,6 +1024,10 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   // for, so re-fetching the same route (e.g. dragging the shade-preference
   // or time-of-day slider) doesn't replay it — only a genuinely new pick does.
   const flythroughKeyRef = useRef<string | null>(null)
+  // Last route flown, kept around purely so the "Replay" button can re-run
+  // it on demand without needing a fresh origin/destination pick.
+  const lastFlythroughCoordsRef = useRef<GeoJSON.Position[] | null>(null)
+  const [canReplayFlythrough, setCanReplayFlythrough] = useState(false)
   routeRef.current = route
   originPropRef.current = origin
   destPropRef.current = destination
@@ -1221,7 +1227,10 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       Math.max(FLYTHROUGH_MIN_DURATION_S, table.total / FLYTHROUGH_TARGET_SPEED_M_S),
     )
 
+    lastFlythroughCoordsRef.current = routeCoords
+    setCanReplayFlythrough(true)
     setCameraMode('fly')
+    setFlythroughProgress(0)
     setFlythroughActive(true)
 
     let startTime: number | null = null
@@ -1238,6 +1247,7 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       }
       const [lng, lat] = offsetLngLat([fetchCenterRef.current.lon, fetchCenterRef.current.lat], xy[0], xy[1])
       map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH, zoom: FLYTHROUGH_ZOOM })
+      setFlythroughProgress(t)
 
       if (t < 1) {
         flythroughRafRef.current = requestAnimationFrame(tick)
@@ -1628,17 +1638,37 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
           </button>
         </div>
         <SunIndicator timeHour={timeHour} bearing={bearing} center={fetchCenterRef.current} />
-      </div>
-      {flythroughActive && (
-        <div className="absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          <span>🎬 Flying the route…</span>
+        {!flythroughActive && canReplayFlythrough && (
           <button
             type="button"
-            onClick={stopFlythrough}
-            className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
+            onClick={() => {
+              const coords = lastFlythroughCoordsRef.current
+              if (coords) playRouteFlythrough(coords)
+            }}
+            className="rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs font-medium text-white shadow-lg backdrop-blur transition-colors hover:bg-slate-900/90"
           >
-            Skip
+            ↻ Replay flythrough
           </button>
+        )}
+      </div>
+      {flythroughActive && (
+        <div className="absolute left-1/2 top-4 z-10 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <span>🎬 Flying the route…</span>
+            <button
+              type="button"
+              onClick={stopFlythrough}
+              className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
+            >
+              Skip
+            </button>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full bg-white/15">
+            <div
+              className="h-full rounded-full bg-teal-400"
+              style={{ width: `${Math.round(flythroughProgress * 100)}%` }}
+            />
+          </div>
         </div>
       )}
       {cameraMode === 'walk' && !flythroughActive && (
