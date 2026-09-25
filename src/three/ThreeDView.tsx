@@ -177,12 +177,11 @@ function createShadowReceivingFlatMaterial(color: THREE.Color): THREE.MeshBasicM
 }
 
 // A tileable facade texture (light wall + a grid of blue-tinted window
-// panes, a handful lit warm-white) generated once on a canvas and reused
-// (cloned per building so each can set its own .repeat) rather than a flat
-// paint color — reads as an actual building facade instead of a plain
-// extruded block, the same "windowed low-poly city" look tools like
-// Mapbox's own city visualizations use. Built lazily (not at module load)
-// since it needs `document`, unavailable during SSR/tests.
+// panes, a handful lit warm-white) generated once on a canvas and shared by
+// every building's wall material — reads as an actual building facade
+// instead of a plain extruded block, the same "windowed low-poly city" look
+// tools like Mapbox's own city visualizations use. Built lazily (not at
+// module load) since it needs `document`, unavailable during SSR/tests.
 let cachedFacadeTexture: THREE.Texture | null = null
 function getBuildingFacadeTexture(): THREE.Texture {
   if (cachedFacadeTexture) return cachedFacadeTexture
@@ -232,6 +231,45 @@ function getBuildingFacadeTexture(): THREE.Texture {
 const FACADE_TILE_WIDTH_M = 6
 const FACADE_TILE_HEIGHT_M = 3.2
 
+/**
+ * ExtrudeGeometry's default side-wall UV generator (WorldUVGenerator, see
+ * three.js's own ExtrudeGeometry.js) returns the *raw* local-meters x/y/z
+ * coordinates as UVs — not normalized to a 0–1 range per wall or per
+ * building. Those coordinates are relative to the scene's fixed model
+ * origin, so a building 300m from it gets UVs around 300 already, before
+ * any texture .repeat is even applied; multiplying that by a per-building
+ * repeat factor (an earlier version of this code tried exactly that) only
+ * compounds the problem, tiling the facade texture so densely per wall that
+ * it mipmaps down to a single averaged, pattern-less color — indistinguishable
+ * from a flat fill. Generating UVs directly in real-world tile units instead
+ * (dividing the raw coordinate by the tile size here rather than relying on
+ * repeat) fixes that at the source, so the texture's default 1:1 repeat is
+ * all that's needed for it to actually tile visibly.
+ */
+const buildingWallUVGenerator: THREE.ExtrudeGeometryOptions['UVGenerator'] = {
+  generateTopUV(_geometry, vertices, indexA, indexB, indexC) {
+    const a = new THREE.Vector2(vertices[indexA * 3], vertices[indexA * 3 + 1])
+    const b = new THREE.Vector2(vertices[indexB * 3], vertices[indexB * 3 + 1])
+    const c = new THREE.Vector2(vertices[indexC * 3], vertices[indexC * 3 + 1])
+    return [a, b, c]
+  },
+  generateSideWallUV(_geometry, vertices, indexA, indexB, indexC, indexD) {
+    const ax = vertices[indexA * 3]
+    const ay = vertices[indexA * 3 + 1]
+    const bx = vertices[indexB * 3]
+    const by = vertices[indexB * 3 + 1]
+    // Same "pick whichever horizontal axis actually varies along this wall"
+    // idea as the default generator — a wall running due north-south would
+    // otherwise get a constant (and so useless) x-based u for every vertex.
+    const useX = Math.abs(ax - bx) >= Math.abs(ay - by)
+    const horizontalOf = (i: number) => vertices[i * 3 + (useX ? 0 : 1)]
+    const heightOf = (i: number) => vertices[i * 3 + 2]
+    return [indexA, indexB, indexC, indexD].map(
+      (i) => new THREE.Vector2(horizontalOf(i) / FACADE_TILE_WIDTH_M, heightOf(i) / FACADE_TILE_HEIGHT_M),
+    )
+  },
+}
+
 /** Extrude one building footprint (a single polygon's rings, already in local meters) to its real height. */
 function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, origin: LatLon): THREE.Mesh | null {
   if (rings.length === 0 || rings[0].length < 3) return null
@@ -248,7 +286,11 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
     shape.holes.push(new THREE.Path(rings[i].map(toLocal)))
   }
 
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: heightM, bevelEnabled: false })
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: heightM,
+    bevelEnabled: false,
+    UVGenerator: buildingWallUVGenerator,
+  })
   // Matches the "liberty" style's own building-3d layer
   // (paint["fill-extrusion-color"] = "hsl(35, 8%, 85%)"), so buildings inside
   // our fetch radius read as the same material as the base map's buildings
@@ -271,21 +313,9 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
   // so a taller neighbor's shadow still shows when it lands on this roof.
   const capMaterial = createShadowReceivingFlatMaterial(baseColor)
 
-  // Perimeter of the real footprint (in meters, from the same local-meters
-  // points the shape was built from), so the facade texture's repeat count
-  // scales with each building's actual size instead of a fixed tile count
-  // stretching differently across a small kiosk versus a full city block.
-  let perimeterM = 0
-  for (let i = 0; i < outerRing.length; i++) {
-    perimeterM += outerRing[i].distanceTo(outerRing[(i + 1) % outerRing.length])
-  }
-  const facadeTexture = getBuildingFacadeTexture().clone()
-  facadeTexture.needsUpdate = true
-  facadeTexture.repeat.set(Math.max(1, perimeterM / FACADE_TILE_WIDTH_M), Math.max(1, heightM / FACADE_TILE_HEIGHT_M))
-
   const wallMaterial = new THREE.MeshStandardMaterial({
     color: baseColor,
-    map: facadeTexture,
+    map: getBuildingFacadeTexture(),
     // The dim ambient/hemisphere fill that makes ground shadows read clearly
     // (see createSunLight) also means a wall facing away from the sun gets
     // almost no light at all, so it renders as flat neutral gray instead of
