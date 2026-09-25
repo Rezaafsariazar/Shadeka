@@ -3,23 +3,12 @@ export interface LatLon {
   lon: number
 }
 
-export type ShadeModel = 'base' | 'advanced'
-
-export interface TemperatureProfilePoint {
-  distance_m: number
-  air_temp_c: number
-  felt_temp_c: number
-}
-
 export interface RouteResponse {
   time_bucket: string
-  shade_model: ShadeModel
   distance_m: number
   estimated_minutes: number
   shade_pct: number
   geometry: GeoJSON.LineString
-  /** null if the live weather fetch failed server-side -- route info itself still works without it. */
-  temperature_profile: TemperatureProfilePoint[] | null
 }
 
 export interface BuildingProperties {
@@ -80,7 +69,6 @@ export async function fetchRoute(
   destination: LatLon,
   shadePref: number,
   at: string,
-  shadeModel: ShadeModel = 'base',
 ): Promise<RouteResponse> {
   const params = new URLSearchParams({
     origin_lat: String(origin.lat),
@@ -89,7 +77,11 @@ export async function fetchRoute(
     dest_lon: String(destination.lon),
     shade_pref: String(shadePref),
     at,
-    shade_model: shadeModel,
+    // The backend also offers an "advanced" model (accounts for lingering
+    // heat on recently-sunny streets); dropped from the UI as not practical
+    // for users to reason about, so always request the plain shade-coverage
+    // one.
+    shade_model: 'base',
   })
 
   const res = await fetch(`${API_URL}/route?${params.toString()}`)
@@ -131,6 +123,46 @@ export async function fetchTransitNearby(): Promise<TransitNearbyResponse> {
     throw new Error(`Transit request failed: ${res.status} ${res.statusText}`)
   }
   return res.json()
+}
+
+export interface GeocodeResult {
+  label: string
+  point: LatLon
+}
+
+// Karlsruhe's bounding box (west, south, east, north), used to bias/limit
+// results to the one city this app covers rather than resolving a typed
+// street name to some other "Kaiserstraße" halfway across the country.
+const KARLSRUHE_VIEWBOX = '8.28,48.95,8.55,49.08'
+
+/**
+ * Free-text address/place search, scoped to Karlsruhe. Backed by the public
+ * Nominatim (OpenStreetMap) API — there's no geocoding endpoint on our own
+ * backend, and Nominatim's usage policy is fine for this: low volume,
+ * debounced by the caller, no bulk/automated querying.
+ */
+export async function geocodeAddress(query: string): Promise<GeocodeResult[]> {
+  const trimmed = query.trim()
+  if (trimmed.length < 3) return []
+
+  const params = new URLSearchParams({
+    q: trimmed,
+    format: 'jsonv2',
+    limit: '5',
+    viewbox: KARLSRUHE_VIEWBOX,
+    bounded: '1',
+  })
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    headers: { Accept: 'application/json' },
+  })
+  if (!res.ok) {
+    throw new Error(`Geocoding request failed: ${res.status} ${res.statusText}`)
+  }
+  const results: { display_name: string; lat: string; lon: string }[] = await res.json()
+  return results.map((r) => ({
+    label: r.display_name,
+    point: { lat: Number.parseFloat(r.lat), lon: Number.parseFloat(r.lon) },
+  }))
 }
 
 export function isoAtHour(hour: number): string {

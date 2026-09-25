@@ -176,6 +176,112 @@ function createShadowReceivingFlatMaterial(color: THREE.Color): THREE.MeshBasicM
   return material
 }
 
+// A tileable facade texture (light wall + a grid of blue-tinted window
+// panes, a handful lit warm-white) generated once on a canvas and shared by
+// every building's wall material — reads as an actual building facade
+// instead of a plain extruded block, the same "windowed low-poly city" look
+// tools like Mapbox's own city visualizations use. Built lazily (not at
+// module load) since it needs `document`, unavailable during SSR/tests.
+let cachedFacadeTexture: THREE.Texture | null = null
+function getBuildingFacadeTexture(): THREE.Texture {
+  if (cachedFacadeTexture) return cachedFacadeTexture
+
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = '#eeeae1'
+    ctx.fillRect(0, 0, size, size)
+
+    // 2x2 rather than the much denser grid this started as: at
+    // FACADE_TILE_WIDTH_M/HEIGHT_M's real-world scale, each cell here is one
+    // window bay on one floor — a finer grid packed the same real wall area
+    // with far smaller windows, which read as high-frequency noise/stripes
+    // once minified at any real viewing distance instead of a clean grid.
+    const cols = 2
+    const rows = 2
+    const cellW = size / cols
+    const cellH = size / rows
+    const marginX = cellW * 0.14
+    const marginY = cellH * 0.18
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cellW + marginX
+        const y = r * cellH + marginY
+        const w = cellW - marginX * 2
+        const h = cellH - marginY * 2
+        const lit = Math.random() < 0.1
+        // A soft, low-contrast hint of a window rather than the previous
+        // fully-saturated, dark blue — that read as a bold checkerboard from
+        // any real flythrough distance instead of the subtle glass tint a
+        // wall should have. Both colors now sit much closer in tone to the
+        // #eeeae1 wall itself.
+        ctx.fillStyle = lit
+          ? `rgb(${242 + Math.random() * 10}, ${228 + Math.random() * 10}, ${196 + Math.random() * 10})`
+          : `rgb(${188 + Math.random() * 14}, ${202 + Math.random() * 12}, ${212 + Math.random() * 10})`
+        ctx.fillRect(x, y, w, h)
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.colorSpace = THREE.SRGBColorSpace
+  cachedFacadeTexture = texture
+  return texture
+}
+
+// Real-world size (meters) one tile of the facade texture above should
+// cover — the texture's 2x2 grid means one tile spans 2 window bays
+// (~3m each) by 2 floors (~3.2m each), so window rows/columns come out
+// roughly floor-height/bay-width regardless of a building's actual
+// footprint size, rather than stretching a fixed tile count across every
+// wall no matter how big it is.
+const FACADE_TILE_WIDTH_M = 6
+const FACADE_TILE_HEIGHT_M = 6.4
+
+/**
+ * ExtrudeGeometry's default side-wall UV generator (WorldUVGenerator, see
+ * three.js's own ExtrudeGeometry.js) returns the *raw* local-meters x/y/z
+ * coordinates as UVs — not normalized to a 0–1 range per wall or per
+ * building. Those coordinates are relative to the scene's fixed model
+ * origin, so a building 300m from it gets UVs around 300 already, before
+ * any texture .repeat is even applied; multiplying that by a per-building
+ * repeat factor (an earlier version of this code tried exactly that) only
+ * compounds the problem, tiling the facade texture so densely per wall that
+ * it mipmaps down to a single averaged, pattern-less color — indistinguishable
+ * from a flat fill. Generating UVs directly in real-world tile units instead
+ * (dividing the raw coordinate by the tile size here rather than relying on
+ * repeat) fixes that at the source, so the texture's default 1:1 repeat is
+ * all that's needed for it to actually tile visibly.
+ */
+const buildingWallUVGenerator: THREE.ExtrudeGeometryOptions['UVGenerator'] = {
+  generateTopUV(_geometry, vertices, indexA, indexB, indexC) {
+    const a = new THREE.Vector2(vertices[indexA * 3], vertices[indexA * 3 + 1])
+    const b = new THREE.Vector2(vertices[indexB * 3], vertices[indexB * 3 + 1])
+    const c = new THREE.Vector2(vertices[indexC * 3], vertices[indexC * 3 + 1])
+    return [a, b, c]
+  },
+  generateSideWallUV(_geometry, vertices, indexA, indexB, indexC, indexD) {
+    const ax = vertices[indexA * 3]
+    const ay = vertices[indexA * 3 + 1]
+    const bx = vertices[indexB * 3]
+    const by = vertices[indexB * 3 + 1]
+    // Same "pick whichever horizontal axis actually varies along this wall"
+    // idea as the default generator — a wall running due north-south would
+    // otherwise get a constant (and so useless) x-based u for every vertex.
+    const useX = Math.abs(ax - bx) >= Math.abs(ay - by)
+    const horizontalOf = (i: number) => vertices[i * 3 + (useX ? 0 : 1)]
+    const heightOf = (i: number) => vertices[i * 3 + 2]
+    return [indexA, indexB, indexC, indexD].map(
+      (i) => new THREE.Vector2(horizontalOf(i) / FACADE_TILE_WIDTH_M, heightOf(i) / FACADE_TILE_HEIGHT_M),
+    )
+  },
+}
+
 /** Extrude one building footprint (a single polygon's rings, already in local meters) to its real height. */
 function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, origin: LatLon): THREE.Mesh | null {
   if (rings.length === 0 || rings[0].length < 3) return null
@@ -185,13 +291,18 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
     return new THREE.Vector2(x, y)
   }
 
-  const shape = new THREE.Shape(rings[0].map(toLocal))
+  const outerRing = rings[0].map(toLocal)
+  const shape = new THREE.Shape(outerRing)
   for (let i = 1; i < rings.length; i++) {
     if (rings[i].length < 3) continue
     shape.holes.push(new THREE.Path(rings[i].map(toLocal)))
   }
 
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: heightM, bevelEnabled: false })
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: heightM,
+    bevelEnabled: false,
+    UVGenerator: buildingWallUVGenerator,
+  })
   // Matches the "liberty" style's own building-3d layer
   // (paint["fill-extrusion-color"] = "hsl(35, 8%, 85%)"), so buildings inside
   // our fetch radius read as the same material as the base map's buildings
@@ -213,8 +324,10 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
   // createShadowReceivingFlatMaterial) rather than a plain MeshBasicMaterial,
   // so a taller neighbor's shadow still shows when it lands on this roof.
   const capMaterial = createShadowReceivingFlatMaterial(baseColor)
+
   const wallMaterial = new THREE.MeshStandardMaterial({
     color: baseColor,
+    map: getBuildingFacadeTexture(),
     // The dim ambient/hemisphere fill that makes ground shadows read clearly
     // (see createSunLight) also means a wall facing away from the sun gets
     // almost no light at all, so it renders as flat neutral gray instead of
@@ -224,7 +337,7 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
     // just darker, without touching the scene-wide ambient (which would
     // wash out the ground shadows again).
     emissive: baseColor,
-    emissiveIntensity: 0.15,
+    emissiveIntensity: 0.1,
     roughness: 0.85,
     metalness: 0.03,
   })
@@ -290,12 +403,13 @@ const TREE_CROWN_MAX_M = 6
 //    TREE_UNLOAD_RADIUS_M away, so the live tree count stays bounded no
 //    matter how far the camera roams — the gap between load/unload radius
 //    avoids load/unload thrashing right at the boundary
-//  - trees within TREE_LOD_NEAR_M of the fetch center get full detail (trunk
-//    + smooth canopy, both shadow-casting and -receiving); farther ones get
-//    a single low-poly canopy sphere with no trunk and no shadow-receiving,
-//    but it still casts a shadow — measured ~1.4ms/frame added render cost
-//    for ~1800 shadow casters in a dense area, well within budget, so every
-//    visible tree contributes a real shadow instead of only the near ~150m
+//  - every tree gets a trunk; trees within TREE_LOD_NEAR_M of the fetch
+//    center additionally get a smoother canopy (+ a second lobe) that
+//    receives shadows, while farther ones get a coarser low-poly canopy
+//    with no shadow-receiving — but it still casts a shadow, measured
+//    ~1.4ms/frame added render cost for ~1800 shadow casters in a dense
+//    area, well within budget, so every visible tree contributes a real
+//    shadow instead of only the near ~150m
 const TREE_LOAD_RADIUS_M = 500
 const TREE_UNLOAD_RADIUS_M = 900
 const TREE_REFETCH_MOVE_M = 150
@@ -383,11 +497,60 @@ function easeInOutQuad(t: number): number {
 }
 
 /**
- * Build one tree's group at its real position/height_m/crown_radius_m.
- * `highDetail` trees (near the camera) get a trunk + a smooth sphere canopy
- * that both casts and receives shadows; distant trees get just a single
- * low-poly canopy sphere (no trunk, doesn't receive shadows), but it still
- * casts one, so every visible tree contributes real shade regardless of LOD.
+ * Perturb a unit sphere's vertices with a few smooth sine-based "lobes" so
+ * its silhouette isn't a perfectly round ball — real tree crowns are lumpy,
+ * not spherical, and a perfect sphere reads instantly as a geometric
+ * primitive rather than foliage. Deliberately smooth/low-frequency (a
+ * function of each vertex's own direction, not independent per-vertex
+ * jitter, which would look like noise/spikes rather than an organic bulge —
+ * especially on the coarse low-poly geometry used for distant trees) and
+ * randomized per call so canopies don't all bulge the same way.
+ *
+ * Also writes a per-vertex `color` attribute (a grayscale multiplier on the
+ * material's own color, via MeshStandardMaterial's vertexColors) so the
+ * canopy reads as a dappled mass of leaves instead of one flat-shaded
+ * color: outward bumps and this geometry's local +Y (which becomes world-up
+ * after the caller's rotateX(Math.PI/2), i.e. the "top" of the canopy)
+ * brighten, as if catching more direct sun, while recessed/lower areas
+ * darken, as if in the canopy's own shadowed interior.
+ */
+function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: number) {
+  const position = geometry.attributes.position
+  const seedA = Math.random() * Math.PI * 2
+  const seedB = Math.random() * Math.PI * 2
+  const seedC = Math.random() * Math.PI * 2
+  const v = new THREE.Vector3()
+  const colors = new Float32Array(position.count * 3)
+  for (let i = 0; i < position.count; i++) {
+    v.fromBufferAttribute(position, i)
+    const len = v.length() || 1
+    const nx = v.x / len
+    const ny = v.y / len
+    const nz = v.z / len
+    const bump =
+      Math.sin(nx * 2.4 + seedA) * Math.cos(ny * 2.0 + seedB) * 0.6 +
+      Math.sin(nz * 2.8 + seedC) * 0.5 +
+      Math.sin((nx + ny + nz) * 1.6) * 0.3
+    v.multiplyScalar(1 + bump * strength)
+    position.setXYZ(i, v.x, v.y, v.z)
+
+    const shade = Math.min(1.25, Math.max(0.78, 0.95 + bump * 0.3 + Math.max(0, ny) * 0.2))
+    colors[i * 3] = shade
+    colors[i * 3 + 1] = shade
+    colors[i * 3 + 2] = shade
+  }
+  position.needsUpdate = true
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geometry.computeVertexNormals()
+}
+
+/**
+ * Build one tree's group at its real position/height_m/crown_radius_m. Every
+ * tree gets a trunk. `highDetail` trees (near the camera) additionally get a
+ * smoother, higher-poly canopy (plus a second lobe) that receives shadows;
+ * distant trees get a coarser low-poly canopy that doesn't receive shadows,
+ * but it still casts one, so every visible tree contributes real shade
+ * regardless of LOD.
  */
 function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatLon, highDetail: boolean): THREE.Group | null {
   const rawHeight = feature.properties?.height_m
@@ -409,32 +572,68 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
 
   const group = new THREE.Group()
 
-  if (highDetail) {
-    const trunkRadius = Math.max(0.12, crownRadius * 0.08)
-    const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, 8)
-    trunkGeometry.rotateX(Math.PI / 2)
-    trunkGeometry.translate(0, 0, trunkHeight / 2)
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 1 })
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial)
-    trunk.castShadow = true
-    trunk.receiveShadow = true
-    group.add(trunk)
-  }
+  // Every tree gets a trunk, not just near/high-detail ones — a cylinder
+  // this simple costs almost nothing to draw, and without one, distant
+  // trees (most of what's on screen at any given moment) read as a
+  // levitating green blob rather than an actual tree.
+  const trunkRadius = Math.max(0.12, crownRadius * 0.08)
+  const trunkSegments = highDetail ? 8 : 5
+  const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, trunkSegments)
+  trunkGeometry.rotateX(Math.PI / 2)
+  trunkGeometry.translate(0, 0, trunkHeight / 2)
+  const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 1 })
+  const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial)
+  trunk.castShadow = true
+  trunk.receiveShadow = highDetail
+  group.add(trunk)
 
   // A squashed sphere reads as a rounded foliage volume far better than a
-  // sharp cone, which flattens into a triangle silhouette from most angles.
-  const canopyGeometry = highDetail ? new THREE.SphereGeometry(1, 16, 12) : new THREE.SphereGeometry(1, 6, 4)
+  // sharp cone, which flattens into a triangle silhouette from most angles —
+  // bumped (see applyOrganicCanopyBumps) so that volume isn't a perfectly
+  // round ball either.
+  const canopyGeometry = new THREE.SphereGeometry(1, highDetail ? 16 : 6, highDetail ? 12 : 4)
+  applyOrganicCanopyBumps(canopyGeometry, highDetail ? 0.22 : 0.16)
   canopyGeometry.scale(crownRadius, canopyVerticalRadius, crownRadius)
   canopyGeometry.rotateX(Math.PI / 2)
   canopyGeometry.translate(0, 0, trunkHeight + canopyVerticalRadius)
   const canopyMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(0.32, 0.5, 0.3 + Math.random() * 0.15),
+    // Bright, saturated "cartoon" foliage green rather than a muted/olive
+    // one — base lightness raised versus a flat-shaded canopy's since the
+    // per-vertex shade multiplier from applyOrganicCanopyBumps still pulls
+    // part of the surface below 1.
+    color: new THREE.Color().setHSL(0.33, 0.68, 0.5 + Math.random() * 0.1),
+    vertexColors: true,
     roughness: 1,
   })
   const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial)
   canopy.castShadow = true
   canopy.receiveShadow = highDetail
   group.add(canopy)
+
+  // A second, smaller lobe offset to one side breaks up the single-blob
+  // silhouette further, reading as an asymmetric, clumped crown rather than
+  // one shape repeated with bumps. Skipped for distant (low-detail) trees —
+  // not worth doubling their draw/shadow cost for a shape difference nobody
+  // will resolve at that distance.
+  if (highDetail) {
+    const lobeRadius = crownRadius * (0.5 + Math.random() * 0.15)
+    const lobeVertical = canopyVerticalRadius * (0.55 + Math.random() * 0.15)
+    const angle = Math.random() * Math.PI * 2
+    const offsetDist = crownRadius * (0.35 + Math.random() * 0.2)
+    const lobeGeometry = new THREE.SphereGeometry(1, 12, 9)
+    applyOrganicCanopyBumps(lobeGeometry, 0.2)
+    lobeGeometry.scale(lobeRadius, lobeVertical, lobeRadius)
+    lobeGeometry.rotateX(Math.PI / 2)
+    lobeGeometry.translate(
+      Math.cos(angle) * offsetDist,
+      Math.sin(angle) * offsetDist,
+      trunkHeight + canopyVerticalRadius * (0.75 + Math.random() * 0.3),
+    )
+    const lobe = new THREE.Mesh(lobeGeometry, canopyMaterial)
+    lobe.castShadow = true
+    lobe.receiveShadow = true
+    group.add(lobe)
+  }
 
   const [x, y] = lngLatToLocalMeters(origin, feature.geometry.coordinates)
   group.position.set(x, y, 0)
@@ -672,6 +871,45 @@ function updateSunLight(light: THREE.DirectionalLight, date: Date, coords: LatLo
   light.intensity = Math.max(dir.z, 0) * 1.8
 }
 
+// Streets aren't three.js geometry in this scene — they're rendered by
+// MapLibre's own base style underneath our custom layer (see addGroundPlane's
+// comment: our transparent ShadowMaterial plane just catches shadows over
+// whatever the real 2D map already drew). So an asphalt look for them means
+// styling the base map's own road layers, not adding a mesh.
+//
+// An image pattern (line-pattern/fill-pattern) was tried first, but
+// MapLibre/Mapbox GL's line-pattern restarts the pattern at every line
+// segment/vertex rather than tiling continuously along a street — and a
+// vector-tile road network is built from many short segments (tile
+// boundaries, intersections), so that showed up as a visibly repeating
+// grid/seam pattern along every road instead of a continuous asphalt
+// texture. A flat, slightly warm dark gray in its place has no seams to show.
+const ASPHALT_COLOR = '#4a4a4d'
+
+/**
+ * Give the base style's own road layers a solid asphalt-gray color instead
+ * of whatever the style's default road color is. Layer ids/types vary by
+ * style (this app uses OpenFreeMap's "liberty", an OpenMapTiles-schema style
+ * whose road layers are conventionally named like
+ * road_minor/road_major/road_motorway under a "transportation" source-layer,
+ * but that naming isn't guaranteed across style updates), so this matches by
+ * a generic id substring rather than exact ids, and skips whatever a given
+ * layer's type doesn't support rather than failing the whole pass over one
+ * mismatch.
+ */
+function applyAsphaltToRoads(map: maplibregl.Map) {
+  for (const layer of map.getStyle()?.layers ?? []) {
+    const id = layer.id.toLowerCase()
+    if (!(id.includes('road') || id.includes('street') || id.includes('highway') || id.includes('motorway'))) continue
+    try {
+      if (layer.type === 'line') map.setPaintProperty(layer.id, 'line-color', ASPHALT_COLOR)
+      else if (layer.type === 'fill') map.setPaintProperty(layer.id, 'fill-color', ASPHALT_COLOR)
+    } catch (err) {
+      console.warn(`Could not apply asphalt color to layer "${layer.id}"`, err)
+    }
+  }
+}
+
 // Deliberately much farther than the light's own shadow-frustum-relative
 // position above — this one is purely visual (where the sun sphere appears
 // to sit), independent of the technical distance used for shadow mapping.
@@ -779,6 +1017,8 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   const [cameraMode, setCameraMode] = useState<CameraMode>('fly')
   const [bearing, setBearing] = useState(0)
   const [flythroughActive, setFlythroughActive] = useState(false)
+  // 0-1 through the current flythrough, for the progress bar in the overlay.
+  const [flythroughProgress, setFlythroughProgress] = useState(0)
   // Mirrors flythroughActive for the map's 'click' listener, which is
   // attached once in the mount-only effect and needs a live read rather
   // than the value from whatever render it was attached in.
@@ -789,6 +1029,10 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   // for, so re-fetching the same route (e.g. dragging the shade-preference
   // or time-of-day slider) doesn't replay it — only a genuinely new pick does.
   const flythroughKeyRef = useRef<string | null>(null)
+  // Last route flown, kept around purely so the "Replay" button can re-run
+  // it on demand without needing a fresh origin/destination pick.
+  const lastFlythroughCoordsRef = useRef<GeoJSON.Position[] | null>(null)
+  const [canReplayFlythrough, setCanReplayFlythrough] = useState(false)
   routeRef.current = route
   originPropRef.current = origin
   destPropRef.current = destination
@@ -988,7 +1232,10 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       Math.max(FLYTHROUGH_MIN_DURATION_S, table.total / FLYTHROUGH_TARGET_SPEED_M_S),
     )
 
+    lastFlythroughCoordsRef.current = routeCoords
+    setCanReplayFlythrough(true)
     setCameraMode('fly')
+    setFlythroughProgress(0)
     setFlythroughActive(true)
 
     let startTime: number | null = null
@@ -1005,6 +1252,7 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       }
       const [lng, lat] = offsetLngLat([fetchCenterRef.current.lon, fetchCenterRef.current.lat], xy[0], xy[1])
       map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH, zoom: FLYTHROUGH_ZOOM })
+      setFlythroughProgress(t)
 
       if (t < 1) {
         flythroughRafRef.current = requestAnimationFrame(tick)
@@ -1134,6 +1382,7 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
 
     map.on('load', () => {
       map.addLayer(customLayer)
+      applyAsphaltToRoads(map)
     })
 
     // Keep loading real trees near wherever the camera ends up, not just the
@@ -1394,17 +1643,37 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
           </button>
         </div>
         <SunIndicator timeHour={timeHour} bearing={bearing} center={fetchCenterRef.current} />
-      </div>
-      {flythroughActive && (
-        <div className="absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          <span>🎬 Flying the route…</span>
+        {!flythroughActive && canReplayFlythrough && (
           <button
             type="button"
-            onClick={stopFlythrough}
-            className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
+            onClick={() => {
+              const coords = lastFlythroughCoordsRef.current
+              if (coords) playRouteFlythrough(coords)
+            }}
+            className="rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs font-medium text-white shadow-lg backdrop-blur transition-colors hover:bg-slate-900/90"
           >
-            Skip
+            ↻ Replay flythrough
           </button>
+        )}
+      </div>
+      {flythroughActive && (
+        <div className="absolute left-1/2 top-4 z-10 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <span>🎬 Flying the route…</span>
+            <button
+              type="button"
+              onClick={stopFlythrough}
+              className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
+            >
+              Skip
+            </button>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full bg-white/15">
+            <div
+              className="h-full rounded-full bg-teal-400"
+              style={{ width: `${Math.round(flythroughProgress * 100)}%` }}
+            />
+          </div>
         </div>
       )}
       {cameraMode === 'walk' && !flythroughActive && (
