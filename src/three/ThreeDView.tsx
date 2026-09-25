@@ -192,25 +192,31 @@ function getBuildingFacadeTexture(): THREE.Texture {
   canvas.height = size
   const ctx = canvas.getContext('2d')
   if (ctx) {
-    ctx.fillStyle = '#e6e0d3'
+    ctx.fillStyle = '#eeeae1'
     ctx.fillRect(0, 0, size, size)
 
-    const cols = 4
-    const rows = 5
+    // 2x2 rather than the much denser grid this started as: at
+    // FACADE_TILE_WIDTH_M/HEIGHT_M's real-world scale, each cell here is one
+    // window bay on one floor — a finer grid packed the same real wall area
+    // with far smaller windows, which read as high-frequency noise/stripes
+    // once minified at any real viewing distance instead of a clean grid.
+    const cols = 2
+    const rows = 2
     const cellW = size / cols
     const cellH = size / rows
-    const marginX = cellW * 0.16
-    const marginY = cellH * 0.2
+    const marginX = cellW * 0.14
+    const marginY = cellH * 0.18
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const x = c * cellW + marginX
         const y = r * cellH + marginY
         const w = cellW - marginX * 2
         const h = cellH - marginY * 2
-        const lit = Math.random() < 0.12
-        ctx.fillStyle = lit
-          ? 'rgba(255, 227, 168, 0.9)'
-          : `rgba(${132 + Math.random() * 20}, ${162 + Math.random() * 15}, ${183 + Math.random() * 15}, ${0.6 + Math.random() * 0.25})`
+        const lit = Math.random() < 0.15
+        // Fully opaque and considerably more saturated than the wall color
+        // it sits on — the previous semi-transparent, close-in-tone blue
+        // blended into the cream background instead of reading as glass.
+        ctx.fillStyle = lit ? 'rgb(255, 221, 150)' : `rgb(${72 + Math.random() * 18}, ${104 + Math.random() * 16}, ${132 + Math.random() * 16})`
         ctx.fillRect(x, y, w, h)
       }
     }
@@ -225,11 +231,13 @@ function getBuildingFacadeTexture(): THREE.Texture {
 }
 
 // Real-world size (meters) one tile of the facade texture above should
-// cover, so window rows/columns come out roughly floor-height/bay-width
-// regardless of a building's actual footprint size, rather than stretching
-// a fixed number of tiles across every wall no matter how big it is.
+// cover — the texture's 2x2 grid means one tile spans 2 window bays
+// (~3m each) by 2 floors (~3.2m each), so window rows/columns come out
+// roughly floor-height/bay-width regardless of a building's actual
+// footprint size, rather than stretching a fixed tile count across every
+// wall no matter how big it is.
 const FACADE_TILE_WIDTH_M = 6
-const FACADE_TILE_HEIGHT_M = 3.2
+const FACADE_TILE_HEIGHT_M = 6.4
 
 /**
  * ExtrudeGeometry's default side-wall UV generator (WorldUVGenerator, see
