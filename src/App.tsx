@@ -24,6 +24,10 @@ export default function App() {
     } else if (pickMode === 'destination') {
       setDestination(point)
       setPickMode(null)
+      // Picking a destination on the 2D map completes a route — jump to 3D
+      // to show it off with the flythrough, rather than leaving the user to
+      // switch views manually to see it.
+      setViewMode('3d')
     }
   }
 
