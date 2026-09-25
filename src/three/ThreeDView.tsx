@@ -496,6 +496,39 @@ function easeInOutQuad(t: number): number {
 }
 
 /**
+ * Perturb a unit sphere's vertices with a few smooth sine-based "lobes" so
+ * its silhouette isn't a perfectly round ball — real tree crowns are lumpy,
+ * not spherical, and a perfect sphere reads instantly as a geometric
+ * primitive rather than foliage. Deliberately smooth/low-frequency (a
+ * function of each vertex's own direction, not independent per-vertex
+ * jitter, which would look like noise/spikes rather than an organic bulge —
+ * especially on the coarse low-poly geometry used for distant trees) and
+ * randomized per call so canopies don't all bulge the same way.
+ */
+function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: number) {
+  const position = geometry.attributes.position
+  const seedA = Math.random() * Math.PI * 2
+  const seedB = Math.random() * Math.PI * 2
+  const seedC = Math.random() * Math.PI * 2
+  const v = new THREE.Vector3()
+  for (let i = 0; i < position.count; i++) {
+    v.fromBufferAttribute(position, i)
+    const len = v.length() || 1
+    const nx = v.x / len
+    const ny = v.y / len
+    const nz = v.z / len
+    const bump =
+      Math.sin(nx * 2.4 + seedA) * Math.cos(ny * 2.0 + seedB) * 0.6 +
+      Math.sin(nz * 2.8 + seedC) * 0.5 +
+      Math.sin((nx + ny + nz) * 1.6) * 0.3
+    v.multiplyScalar(1 + bump * strength)
+    position.setXYZ(i, v.x, v.y, v.z)
+  }
+  position.needsUpdate = true
+  geometry.computeVertexNormals()
+}
+
+/**
  * Build one tree's group at its real position/height_m/crown_radius_m.
  * `highDetail` trees (near the camera) get a trunk + a smooth sphere canopy
  * that both casts and receives shadows; distant trees get just a single
@@ -535,8 +568,11 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
   }
 
   // A squashed sphere reads as a rounded foliage volume far better than a
-  // sharp cone, which flattens into a triangle silhouette from most angles.
-  const canopyGeometry = highDetail ? new THREE.SphereGeometry(1, 16, 12) : new THREE.SphereGeometry(1, 6, 4)
+  // sharp cone, which flattens into a triangle silhouette from most angles —
+  // bumped (see applyOrganicCanopyBumps) so that volume isn't a perfectly
+  // round ball either.
+  const canopyGeometry = new THREE.SphereGeometry(1, highDetail ? 16 : 6, highDetail ? 12 : 4)
+  applyOrganicCanopyBumps(canopyGeometry, highDetail ? 0.22 : 0.16)
   canopyGeometry.scale(crownRadius, canopyVerticalRadius, crownRadius)
   canopyGeometry.rotateX(Math.PI / 2)
   canopyGeometry.translate(0, 0, trunkHeight + canopyVerticalRadius)
@@ -548,6 +584,31 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
   canopy.castShadow = true
   canopy.receiveShadow = highDetail
   group.add(canopy)
+
+  // A second, smaller lobe offset to one side breaks up the single-blob
+  // silhouette further, reading as an asymmetric, clumped crown rather than
+  // one shape repeated with bumps. Skipped for distant (low-detail) trees —
+  // not worth doubling their draw/shadow cost for a shape difference nobody
+  // will resolve at that distance.
+  if (highDetail) {
+    const lobeRadius = crownRadius * (0.5 + Math.random() * 0.15)
+    const lobeVertical = canopyVerticalRadius * (0.55 + Math.random() * 0.15)
+    const angle = Math.random() * Math.PI * 2
+    const offsetDist = crownRadius * (0.35 + Math.random() * 0.2)
+    const lobeGeometry = new THREE.SphereGeometry(1, 12, 9)
+    applyOrganicCanopyBumps(lobeGeometry, 0.2)
+    lobeGeometry.scale(lobeRadius, lobeVertical, lobeRadius)
+    lobeGeometry.rotateX(Math.PI / 2)
+    lobeGeometry.translate(
+      Math.cos(angle) * offsetDist,
+      Math.sin(angle) * offsetDist,
+      trunkHeight + canopyVerticalRadius * (0.75 + Math.random() * 0.3),
+    )
+    const lobe = new THREE.Mesh(lobeGeometry, canopyMaterial)
+    lobe.castShadow = true
+    lobe.receiveShadow = true
+    group.add(lobe)
+  }
 
   const [x, y] = lngLatToLocalMeters(origin, feature.geometry.coordinates)
   group.position.set(x, y, 0)
