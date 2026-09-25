@@ -48,10 +48,25 @@ const FLYTHROUGH_TARGET_SPEED_M_S = 14
 const FLYTHROUGH_MIN_DURATION_S = 4
 const FLYTHROUGH_MAX_DURATION_S = 22
 const FLYTHROUGH_PITCH = 58
-// Per-frame lerp factor (toward the route's actual heading) rather than
-// snapping the camera bearing directly to each segment's heading, which
-// would whip-pan at every corner of the route polyline.
-const FLYTHROUGH_BEARING_SMOOTHING = 0.12
+// Noticeably closer than the initial map zoom (17) — the earlier flythrough
+// left zoom untouched, which read as a distant, wide view of the route
+// rather than a cinematic, immersive one.
+const FLYTHROUGH_ZOOM = 18.3
+// Real route polylines are jittery at the scale of individual segments
+// (closely-spaced vertices from OSM-derived street geometry, not a smooth
+// curve), so a heading computed from the *current* tiny segment whips the
+// camera around at every one of those micro-kinks. Looking a fixed distance
+// ahead along the path instead — the direction from here to a point 30m up
+// the route — averages over that noise and tracks the route's actual
+// large-scale shape, the way a real driver looks ahead rather than at the
+// pavement directly in front of the car.
+const FLYTHROUGH_BEARING_LOOKAHEAD_M = 30
+// Per-frame lerp factor (toward the look-ahead heading above) rather than
+// snapping the camera bearing directly to it, which would still whip-pan at
+// sharp real corners (an actual street intersection, say) even with the
+// look-ahead smoothing out per-vertex noise. Low enough, combined with the
+// look-ahead, to read as a smooth, gentle turn instead of a dizzying snap.
+const FLYTHROUGH_BEARING_SMOOTHING = 0.05
 
 /** Offset a lng/lat by a distance in meters (small-area equirectangular approximation, fine at city scale). */
 function offsetLngLat(center: [number, number], dxMeters: number, dyMeters: number): [number, number] {
@@ -338,6 +353,23 @@ function pointAndBearingAtDistance(table: RoutePathTable, distance: number): { x
   // compass-bearing conversions (see getSunDirection), where 0=north/90=east.
   const bearingDeg = (Math.atan2(x1 - x0, y1 - y0) * 180) / Math.PI
   return { xy: [x, y], bearingDeg: (bearingDeg + 360) % 360 }
+}
+
+/**
+ * The camera-facing heading (compass degrees) at `distance` along the route,
+ * looking `lookaheadM` further up the path rather than at the immediate
+ * next vertex — see FLYTHROUGH_BEARING_LOOKAHEAD_M's comment on why. Returns
+ * null within `lookaheadM` of the route's end, where the look-ahead point
+ * clamps to the same spot as the current one (zero-length direction vector) —
+ * callers should just keep whatever heading they already had.
+ */
+function lookaheadBearingAtDistance(table: RoutePathTable, distance: number, lookaheadM: number): number | null {
+  const [x0, y0] = pointAndBearingAtDistance(table, distance).xy
+  const [x1, y1] = pointAndBearingAtDistance(table, Math.min(distance + lookaheadM, table.total)).xy
+  const dx = x1 - x0
+  const dy = y1 - y0
+  if (Math.hypot(dx, dy) < 0.5) return null
+  return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360
 }
 
 /** Ease toward `target` bearing by fraction `t` of the shorter way around the compass, so a near-180° turn doesn't spin the long way. */
@@ -953,10 +985,13 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       if (startTime === null) startTime = now
       const t = Math.min(1, (now - startTime) / (durationS * 1000))
       const easedDistance = easeInOutQuad(t) * table.total
-      const { xy, bearingDeg } = pointAndBearingAtDistance(table, easedDistance)
-      smoothedBearing = lerpBearing(smoothedBearing, bearingDeg, FLYTHROUGH_BEARING_SMOOTHING)
+      const { xy } = pointAndBearingAtDistance(table, easedDistance)
+      const targetBearing = lookaheadBearingAtDistance(table, easedDistance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
+      if (targetBearing !== null) {
+        smoothedBearing = lerpBearing(smoothedBearing, targetBearing, FLYTHROUGH_BEARING_SMOOTHING)
+      }
       const [lng, lat] = offsetLngLat([fetchCenterRef.current.lon, fetchCenterRef.current.lat], xy[0], xy[1])
-      map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH })
+      map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH, zoom: FLYTHROUGH_ZOOM })
 
       if (t < 1) {
         flythroughRafRef.current = requestAnimationFrame(tick)
