@@ -212,11 +212,15 @@ function getBuildingFacadeTexture(): THREE.Texture {
         const y = r * cellH + marginY
         const w = cellW - marginX * 2
         const h = cellH - marginY * 2
-        const lit = Math.random() < 0.15
-        // Fully opaque and considerably more saturated than the wall color
-        // it sits on — the previous semi-transparent, close-in-tone blue
-        // blended into the cream background instead of reading as glass.
-        ctx.fillStyle = lit ? 'rgb(255, 221, 150)' : `rgb(${72 + Math.random() * 18}, ${104 + Math.random() * 16}, ${132 + Math.random() * 16})`
+        const lit = Math.random() < 0.1
+        // A soft, low-contrast hint of a window rather than the previous
+        // fully-saturated, dark blue — that read as a bold checkerboard from
+        // any real flythrough distance instead of the subtle glass tint a
+        // wall should have. Both colors now sit much closer in tone to the
+        // #eeeae1 wall itself.
+        ctx.fillStyle = lit
+          ? `rgb(${242 + Math.random() * 10}, ${228 + Math.random() * 10}, ${196 + Math.random() * 10})`
+          : `rgb(${188 + Math.random() * 14}, ${202 + Math.random() * 12}, ${212 + Math.random() * 10})`
         ctx.fillRect(x, y, w, h)
       }
     }
