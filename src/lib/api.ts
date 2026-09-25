@@ -214,30 +214,43 @@ const WMO_CONDITIONS: Record<number, { label: string; icon: string }> = {
 }
 
 /**
- * Today's real, current weather at `point` — no API key required. Backed by
+ * Today's real weather forecast at `point`, for whichever hour the app's
+ * "Time of day" slider is set to — no API key required. Backed by
  * Open-Meteo, a free public weather API with no auth/quota for this kind of
  * low-volume usage. The sun-position math elsewhere in this app (suncalc) is
  * purely geometric and has no idea whether the sky is actually clear or
- * overcast right now; this is what fills that gap.
+ * overcast at that hour; this is what fills that gap. Uses the hourly
+ * forecast (not Open-Meteo's "current conditions" endpoint) specifically so
+ * this tracks the slider instead of always showing the same right-now
+ * reading regardless of what hour is selected.
  */
-export async function fetchCurrentWeather(point: LatLon): Promise<WeatherSnapshot> {
+export async function fetchWeatherAtHour(point: LatLon, hour: number): Promise<WeatherSnapshot> {
   const params = new URLSearchParams({
     latitude: String(point.lat),
     longitude: String(point.lon),
-    current: 'temperature_2m,precipitation,weather_code,cloud_cover',
+    hourly: 'temperature_2m,precipitation,weather_code,cloud_cover',
     timezone: 'auto',
+    forecast_days: '1',
   })
   const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`)
   if (!res.ok) {
     throw new Error(`Weather request failed: ${res.status} ${res.statusText}`)
   }
   const data = await res.json()
-  const current = data.current
-  const condition = WMO_CONDITIONS[current.weather_code] ?? { label: 'Unknown', icon: '🌡️' }
+  const times: string[] = data.hourly.time
+  // Match by the "HH" substring of each "YYYY-MM-DDTHH:MM" entry rather than
+  // parsing with `new Date(...)` — these are naive local-time strings for
+  // `point`'s own timezone (thanks to timezone=auto), and the Date
+  // constructor would instead interpret them in the browser's own timezone.
+  const targetHour = Math.round(hour) % 24
+  let index = times.findIndex((t) => Number(t.slice(11, 13)) === targetHour)
+  if (index === -1) index = 0
+
+  const condition = WMO_CONDITIONS[data.hourly.weather_code[index]] ?? { label: 'Unknown', icon: '🌡️' }
   return {
-    temperatureC: current.temperature_2m,
-    cloudCoverPct: current.cloud_cover,
-    precipitationMm: current.precipitation,
+    temperatureC: data.hourly.temperature_2m[index],
+    cloudCoverPct: data.hourly.cloud_cover[index],
+    precipitationMm: data.hourly.precipitation[index],
     conditionLabel: condition.label,
     conditionIcon: condition.icon,
   }

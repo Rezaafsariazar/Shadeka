@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import ThreeDView from './three/ThreeDView'
-import { fetchCurrentWeather, fetchRoute, isoAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
+import { fetchRoute, fetchWeatherAtHour, isoAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
 
 const KARLSRUHE_CENTER: LatLon = { lat: 49.0069, lon: 8.4037 }
 
@@ -83,7 +83,7 @@ export default function App() {
     function load() {
       setWeatherLoading(true)
       setWeatherError(null)
-      fetchCurrentWeather(point)
+      fetchWeatherAtHour(point, timeHour)
         .then((data) => {
           if (!cancelled) setWeather(data)
         })
@@ -95,13 +95,17 @@ export default function App() {
         })
     }
 
-    load()
+    // Debounced like the route fetch above — dragging the time slider fires
+    // this on every step, and there's no need to refetch the whole day's
+    // hourly forecast for each intermediate value.
+    const timer = setTimeout(load, 300)
     const interval = setInterval(load, WEATHER_REFRESH_MS)
     return () => {
       cancelled = true
+      clearTimeout(timer)
       clearInterval(interval)
     }
-  }, [showWeather, origin])
+  }, [showWeather, origin, timeHour])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">

@@ -396,9 +396,9 @@ export default function Sidebar({
       <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-sm font-medium text-slate-700">Real weather right now</span>
+            <span className="text-sm font-medium text-slate-700">Real weather at {formatHour(timeHour)}</span>
             <p className="text-xs text-slate-400">
-              Shade above assumes a clear sky — check today's actual conditions.
+              Shade above assumes a clear sky — check today's actual forecast for this time.
             </p>
           </div>
           <button
@@ -412,8 +412,8 @@ export default function Sidebar({
             }`}
           >
             <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                showWeather ? 'translate-x-4' : 'translate-x-0.5'
+              className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+                showWeather ? 'translate-x-4' : 'translate-x-0'
               }`}
             />
           </button>
@@ -439,8 +439,8 @@ export default function Sidebar({
             )}
             {weather && weather.cloudCoverPct >= HEAVY_CLOUD_THRESHOLD_PCT && (
               <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
-                ☁️ Mostly overcast right now — with little direct sun, shaded routes won't feel much
-                different from any other route today.
+                ☁️ Mostly overcast at this time — with little direct sun, shaded routes won't feel much
+                different from any other route.
               </p>
             )}
           </>
