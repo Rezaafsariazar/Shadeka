@@ -39,6 +39,20 @@ const WALK_PITCH_MIN = 75
 const WALK_PITCH_MAX = 89
 const LOOK_SENSITIVITY = 0.15
 
+// A scripted camera flythrough along a freshly-computed route, so picking a
+// route shows it off immediately instead of leaving the user to find it
+// manually. Speed/duration are derived from the route's real length (a short
+// route shouldn't take as long as a cross-town one), clamped so neither a
+// tiny nor a very long route makes for an awkward clip.
+const FLYTHROUGH_TARGET_SPEED_M_S = 14
+const FLYTHROUGH_MIN_DURATION_S = 4
+const FLYTHROUGH_MAX_DURATION_S = 22
+const FLYTHROUGH_PITCH = 58
+// Per-frame lerp factor (toward the route's actual heading) rather than
+// snapping the camera bearing directly to each segment's heading, which
+// would whip-pan at every corner of the route polyline.
+const FLYTHROUGH_BEARING_SMOOTHING = 0.12
+
 /** Offset a lng/lat by a distance in meters (small-area equirectangular approximation, fine at city scale). */
 function offsetLngLat(center: [number, number], dxMeters: number, dyMeters: number): [number, number] {
   const metersPerDegLat = 111320
@@ -290,6 +304,52 @@ function distanceMeters(a: LatLon, b: LatLon): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
+/** A route's coordinates pre-converted to local meters, with cumulative distance along it, for walking it at a constant pace. */
+interface RoutePathTable {
+  localPts: [number, number][]
+  cumulative: number[]
+  total: number
+}
+
+function buildRoutePathTable(coords: GeoJSON.Position[], origin: LatLon): RoutePathTable {
+  const localPts = coords.map((pos) => lngLatToLocalMeters(origin, pos))
+  const cumulative = [0]
+  for (let i = 1; i < localPts.length; i++) {
+    const [x0, y0] = localPts[i - 1]
+    const [x1, y1] = localPts[i]
+    cumulative.push(cumulative[i - 1] + Math.hypot(x1 - x0, y1 - y0))
+  }
+  return { localPts, cumulative, total: cumulative[cumulative.length - 1] ?? 0 }
+}
+
+/** The local-meters point and direction-of-travel bearing (compass degrees) at `distance` along a route's path table. */
+function pointAndBearingAtDistance(table: RoutePathTable, distance: number): { xy: [number, number]; bearingDeg: number } {
+  const { localPts, cumulative, total } = table
+  const d = Math.min(Math.max(distance, 0), total)
+  let i = 1
+  while (i < cumulative.length - 1 && cumulative[i] < d) i++
+  const [x0, y0] = localPts[i - 1]
+  const [x1, y1] = localPts[i]
+  const segLen = cumulative[i] - cumulative[i - 1] || 1
+  const t = (d - cumulative[i - 1]) / segLen
+  const x = x0 + (x1 - x0) * t
+  const y = y0 + (y1 - y0) * t
+  // atan2(dx, dy) rather than atan2(dy, dx) — matches this file's other
+  // compass-bearing conversions (see getSunDirection), where 0=north/90=east.
+  const bearingDeg = (Math.atan2(x1 - x0, y1 - y0) * 180) / Math.PI
+  return { xy: [x, y], bearingDeg: (bearingDeg + 360) % 360 }
+}
+
+/** Ease toward `target` bearing by fraction `t` of the shorter way around the compass, so a near-180° turn doesn't spin the long way. */
+function lerpBearing(current: number, target: number, t: number): number {
+  const diff = ((target - current + 540) % 360) - 180
+  return (current + diff * t + 360) % 360
+}
+
+function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+}
+
 /**
  * Build one tree's group at its real position/height_m/crown_radius_m.
  * `highDetail` trees (near the camera) get a trunk + a smooth sphere canopy
@@ -524,6 +584,15 @@ function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.Hemisphe
   // higher map resolution above so edges read as "soft" without dissolving
   // into a barely-visible haze.
   light.shadow.radius = 1.5
+  // OrthographicCamera's left/right/top/bottom/near/far are plain
+  // properties — three.js only rebuilds the actual projection matrix used
+  // at render time when updateProjectionMatrix() is called. Without this,
+  // the shadow camera silently keeps DirectionalLightShadow's constructor
+  // default frustum (a ±5m box, near 0.5/far 500) no matter what the lines
+  // above set it to, so only geometry within a few meters of the light's
+  // target would ever land inside the shadow map — every farther building
+  // and tree would render with no shadow at all.
+  light.shadow.camera.updateProjectionMatrix()
 
   // HemisphereLight blends sky/ground color by the angle between a surface
   // normal and the light's position vector, so it needs a non-zero position
@@ -657,6 +726,12 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
   const destPropRef = useRef<LatLon | null>(null)
   const [cameraMode, setCameraMode] = useState<CameraMode>('fly')
   const [bearing, setBearing] = useState(0)
+  const [flythroughActive, setFlythroughActive] = useState(false)
+  const flythroughRafRef = useRef(0)
+  // Tracks which origin/destination pair the last flythrough already played
+  // for, so re-fetching the same route (e.g. dragging the shade-preference
+  // or time-of-day slider) doesn't replay it — only a genuinely new pick does.
+  const flythroughKeyRef = useRef<string | null>(null)
   routeRef.current = route
   originPropRef.current = origin
   destPropRef.current = destination
@@ -834,6 +909,52 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
     mapRef.current?.triggerRepaint()
   }
 
+  function stopFlythrough() {
+    cancelAnimationFrame(flythroughRafRef.current)
+    setFlythroughActive(false)
+  }
+
+  // Animate the camera along `routeCoords` at a roughly constant real-world
+  // pace (eased at the start/end), with the bearing easing toward the
+  // direction of travel rather than snapping at each corner. Cancels any
+  // flythrough already in progress rather than letting two race.
+  function playRouteFlythrough(routeCoords: GeoJSON.Position[]) {
+    const map = mapRef.current
+    if (!map || routeCoords.length < 2) return
+    cancelAnimationFrame(flythroughRafRef.current)
+
+    const table = buildRoutePathTable(routeCoords, fetchCenterRef.current)
+    if (table.total <= 0) return
+
+    const durationS = Math.min(
+      FLYTHROUGH_MAX_DURATION_S,
+      Math.max(FLYTHROUGH_MIN_DURATION_S, table.total / FLYTHROUGH_TARGET_SPEED_M_S),
+    )
+
+    setCameraMode('fly')
+    setFlythroughActive(true)
+
+    let startTime: number | null = null
+    let smoothedBearing = map.getBearing()
+
+    const tick = (now: number) => {
+      if (startTime === null) startTime = now
+      const t = Math.min(1, (now - startTime) / (durationS * 1000))
+      const easedDistance = easeInOutQuad(t) * table.total
+      const { xy, bearingDeg } = pointAndBearingAtDistance(table, easedDistance)
+      smoothedBearing = lerpBearing(smoothedBearing, bearingDeg, FLYTHROUGH_BEARING_SMOOTHING)
+      const [lng, lat] = offsetLngLat([fetchCenterRef.current.lon, fetchCenterRef.current.lat], xy[0], xy[1])
+      map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH })
+
+      if (t < 1) {
+        flythroughRafRef.current = requestAnimationFrame(tick)
+      } else {
+        setFlythroughActive(false)
+      }
+    }
+    flythroughRafRef.current = requestAnimationFrame(tick)
+  }
+
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -982,6 +1103,10 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
         // just leaving the frustum's XY bounds.
         sunDistanceRef.current = Math.max(SUN_LIGHT_DISTANCE_MIN_M, halfExtent + 100)
         light.shadow.camera.far = sunDistanceRef.current + halfExtent + 100
+        // Required after touching left/right/top/bottom/far above — see the
+        // matching comment in createSunLight for why the shadow camera would
+        // otherwise silently keep rendering with its previous frustum.
+        light.shadow.camera.updateProjectionMatrix()
         const date = new Date(isoAtHour(animatedHourRef.current))
         updateSunLight(light, date, fetchCenter, sunTargetRef.current, sunDistanceRef.current)
         map.triggerRepaint()
@@ -991,6 +1116,7 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
 
     return () => {
       cancelAnimationFrame(sunAnimFrameRef.current)
+      cancelAnimationFrame(flythroughRafRef.current)
       map.off('moveend', onMoveEnd)
       map.remove()
       mapRef.current = null
@@ -1024,6 +1150,33 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
     syncRouteMesh()
   }, [route])
 
+  // Play a cinematic flythrough whenever a *new* origin/destination pair
+  // resolves to a route — but not on every re-fetch of the same pair (e.g.
+  // dragging the shade-preference or time-of-day slider, which also
+  // recomputes `route`), so it only plays when the user actually picks a
+  // new route rather than re-triggering constantly while they tune it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!route || !origin || !destination) {
+      flythroughKeyRef.current = null
+      return
+    }
+    const key = `${origin.lat.toFixed(6)},${origin.lon.toFixed(6)}|${destination.lat.toFixed(6)},${destination.lon.toFixed(6)}`
+    if (key === flythroughKeyRef.current) return
+    flythroughKeyRef.current = key
+
+    const coords = route.coordinates
+    if (sceneRef.current) {
+      playRouteFlythrough(coords)
+    } else {
+      // The custom three.js layer (and its `onAdd`) only finishes after the
+      // map's own 'load' event — a route picked before that has happened
+      // (e.g. immediately on mount) needs to wait for it rather than
+      // starting the flythrough against a scene that doesn't exist yet.
+      mapRef.current?.once('load', () => playRouteFlythrough(coords))
+    }
+  }, [route, origin, destination])
+
   // Keep the origin/destination pin markers in sync.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -1038,19 +1191,23 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
   }, [timeHour, origin])
 
   // Camera mode: free-fly uses MapLibre's default interaction handlers;
-  // walk mode disables them in favor of WASD + mouse-drag-look below.
+  // walk mode disables them in favor of WASD + mouse-drag-look below. A
+  // flythrough in progress locks them out the same way walk mode does
+  // (regardless of which mode is otherwise selected), since it's driving
+  // the camera itself via jumpTo — manual input during it would fight the
+  // animation instead of just being ignored.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
-    if (cameraMode === 'walk') {
+    if (cameraMode === 'walk' || flythroughActive) {
       map.dragPan.disable()
       map.dragRotate.disable()
       map.scrollZoom.disable()
       map.doubleClickZoom.disable()
       map.touchZoomRotate.disable()
       map.keyboard.disable()
-      map.setPitch(WALK_PITCH)
+      if (cameraMode === 'walk' && !flythroughActive) map.setPitch(WALK_PITCH)
     } else {
       map.dragPan.enable()
       map.dragRotate.enable()
@@ -1059,11 +1216,11 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
       map.touchZoomRotate.enable()
       map.keyboard.enable()
     }
-  }, [cameraMode])
+  }, [cameraMode, flythroughActive])
 
   // Walk mode: WASD/arrow movement relative to bearing.
   useEffect(() => {
-    if (cameraMode !== 'walk') return
+    if (cameraMode !== 'walk' || flythroughActive) return
     const map = mapRef.current
     if (!map) return
 
@@ -1138,7 +1295,7 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
       window.removeEventListener('mouseup', onMouseUp)
       window.removeEventListener('mousemove', onMouseMove)
     }
-  }, [cameraMode])
+  }, [cameraMode, flythroughActive])
 
   return (
     <div className="relative h-full w-full">
@@ -1147,14 +1304,20 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
         <div className="flex overflow-hidden rounded-lg border border-white/20 bg-slate-900/80 text-xs font-medium text-white shadow-lg backdrop-blur">
           <button
             type="button"
-            onClick={() => setCameraMode('fly')}
+            onClick={() => {
+              stopFlythrough()
+              setCameraMode('fly')
+            }}
             className={`px-3 py-2 transition-colors ${cameraMode === 'fly' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
           >
             Free-fly
           </button>
           <button
             type="button"
-            onClick={() => setCameraMode('walk')}
+            onClick={() => {
+              stopFlythrough()
+              setCameraMode('walk')
+            }}
             className={`px-3 py-2 transition-colors ${cameraMode === 'walk' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
           >
             Walk
@@ -1162,7 +1325,19 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
         </div>
         <SunIndicator timeHour={timeHour} bearing={bearing} center={fetchCenterRef.current} />
       </div>
-      {cameraMode === 'walk' && (
+      {flythroughActive && (
+        <div className="absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
+          <span>🎬 Flying the route…</span>
+          <button
+            type="button"
+            onClick={stopFlythrough}
+            className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
+          >
+            Skip
+          </button>
+        </div>
+      )}
+      {cameraMode === 'walk' && !flythroughActive && (
         <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
           WASD to move · drag to look
         </div>
