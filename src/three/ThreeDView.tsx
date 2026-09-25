@@ -504,6 +504,14 @@ function easeInOutQuad(t: number): number {
  * jitter, which would look like noise/spikes rather than an organic bulge —
  * especially on the coarse low-poly geometry used for distant trees) and
  * randomized per call so canopies don't all bulge the same way.
+ *
+ * Also writes a per-vertex `color` attribute (a grayscale multiplier on the
+ * material's own color, via MeshStandardMaterial's vertexColors) so the
+ * canopy reads as a dappled mass of leaves instead of one flat-shaded
+ * color: outward bumps and this geometry's local +Y (which becomes world-up
+ * after the caller's rotateX(Math.PI/2), i.e. the "top" of the canopy)
+ * brighten, as if catching more direct sun, while recessed/lower areas
+ * darken, as if in the canopy's own shadowed interior.
  */
 function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: number) {
   const position = geometry.attributes.position
@@ -511,6 +519,7 @@ function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: numbe
   const seedB = Math.random() * Math.PI * 2
   const seedC = Math.random() * Math.PI * 2
   const v = new THREE.Vector3()
+  const colors = new Float32Array(position.count * 3)
   for (let i = 0; i < position.count; i++) {
     v.fromBufferAttribute(position, i)
     const len = v.length() || 1
@@ -523,8 +532,14 @@ function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: numbe
       Math.sin((nx + ny + nz) * 1.6) * 0.3
     v.multiplyScalar(1 + bump * strength)
     position.setXYZ(i, v.x, v.y, v.z)
+
+    const shade = Math.min(1.3, Math.max(0.6, 0.85 + bump * 0.35 + Math.max(0, ny) * 0.25))
+    colors[i * 3] = shade
+    colors[i * 3 + 1] = shade
+    colors[i * 3 + 2] = shade
   }
   position.needsUpdate = true
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geometry.computeVertexNormals()
 }
 
@@ -577,7 +592,12 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
   canopyGeometry.rotateX(Math.PI / 2)
   canopyGeometry.translate(0, 0, trunkHeight + canopyVerticalRadius)
   const canopyMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(0.32, 0.5, 0.3 + Math.random() * 0.15),
+    // Base lightness raised versus a flat-shaded canopy's — the per-vertex
+    // shade multiplier from applyOrganicCanopyBumps darkens most of the
+    // surface below 1, so a base tuned for a flat color would otherwise
+    // come out uniformly darker overall instead of just gaining contrast.
+    color: new THREE.Color().setHSL(0.32, 0.55, 0.42 + Math.random() * 0.12),
+    vertexColors: true,
     roughness: 1,
   })
   const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial)
