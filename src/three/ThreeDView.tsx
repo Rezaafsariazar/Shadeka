@@ -48,10 +48,25 @@ const FLYTHROUGH_TARGET_SPEED_M_S = 14
 const FLYTHROUGH_MIN_DURATION_S = 4
 const FLYTHROUGH_MAX_DURATION_S = 22
 const FLYTHROUGH_PITCH = 58
-// Per-frame lerp factor (toward the route's actual heading) rather than
-// snapping the camera bearing directly to each segment's heading, which
-// would whip-pan at every corner of the route polyline.
-const FLYTHROUGH_BEARING_SMOOTHING = 0.12
+// Noticeably closer than the initial map zoom (17) — the earlier flythrough
+// left zoom untouched, which read as a distant, wide view of the route
+// rather than a cinematic, immersive one.
+const FLYTHROUGH_ZOOM = 18.3
+// Real route polylines are jittery at the scale of individual segments
+// (closely-spaced vertices from OSM-derived street geometry, not a smooth
+// curve), so a heading computed from the *current* tiny segment whips the
+// camera around at every one of those micro-kinks. Looking a fixed distance
+// ahead along the path instead — the direction from here to a point 30m up
+// the route — averages over that noise and tracks the route's actual
+// large-scale shape, the way a real driver looks ahead rather than at the
+// pavement directly in front of the car.
+const FLYTHROUGH_BEARING_LOOKAHEAD_M = 30
+// Per-frame lerp factor (toward the look-ahead heading above) rather than
+// snapping the camera bearing directly to it, which would still whip-pan at
+// sharp real corners (an actual street intersection, say) even with the
+// look-ahead smoothing out per-vertex noise. Low enough, combined with the
+// look-ahead, to read as a smooth, gentle turn instead of a dizzying snap.
+const FLYTHROUGH_BEARING_SMOOTHING = 0.05
 
 /** Offset a lng/lat by a distance in meters (small-area equirectangular approximation, fine at city scale). */
 function offsetLngLat(center: [number, number], dxMeters: number, dyMeters: number): [number, number] {
@@ -340,6 +355,23 @@ function pointAndBearingAtDistance(table: RoutePathTable, distance: number): { x
   return { xy: [x, y], bearingDeg: (bearingDeg + 360) % 360 }
 }
 
+/**
+ * The camera-facing heading (compass degrees) at `distance` along the route,
+ * looking `lookaheadM` further up the path rather than at the immediate
+ * next vertex — see FLYTHROUGH_BEARING_LOOKAHEAD_M's comment on why. Returns
+ * null within `lookaheadM` of the route's end, where the look-ahead point
+ * clamps to the same spot as the current one (zero-length direction vector) —
+ * callers should just keep whatever heading they already had.
+ */
+function lookaheadBearingAtDistance(table: RoutePathTable, distance: number, lookaheadM: number): number | null {
+  const [x0, y0] = pointAndBearingAtDistance(table, distance).xy
+  const [x1, y1] = pointAndBearingAtDistance(table, Math.min(distance + lookaheadM, table.total)).xy
+  const dx = x1 - x0
+  const dy = y1 - y0
+  if (Math.hypot(dx, dy) < 0.5) return null
+  return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360
+}
+
 /** Ease toward `target` bearing by fraction `t` of the shorter way around the compass, so a near-180° turn doesn't spin the long way. */
 function lerpBearing(current: number, target: number, t: number): number {
   const diff = ((target - current + 540) % 360) - 180
@@ -499,10 +531,19 @@ const MARKER_HEAD_RADIUS_M = 7
  * rooftops as a landmark from both free-fly (seen from above) and walk mode
  * (seen from street level). Unlit so it reads clearly as a UI marker
  * regardless of time of day/shadow, same reasoning as the route tube.
+ *
+ * Depth-testing against real geometry is disabled for the same reason it's
+ * disabled on the route tube (see buildRouteMesh): a marker can end up
+ * behind a building from the camera's current angle even though it's the
+ * taller of the two (a tall building's roofline between the camera and a
+ * marker on the far side of it, say) — geometrically correct occlusion, but
+ * wrong for a wayfinding pin, which should always read on top like the 2D
+ * map's own marker icon does. renderOrder is one past the route tube's own
+ * (999) so a marker sitting right at a route endpoint draws in front of it.
  */
 function buildPinMarker(color: number): THREE.Group {
   const group = new THREE.Group()
-  const material = new THREE.MeshBasicMaterial({ color })
+  const material = new THREE.MeshBasicMaterial({ color, depthTest: false })
 
   const coneHeight = MARKER_TOTAL_HEIGHT_M - MARKER_HEAD_RADIUS_M
   // CylinderGeometry(radiusTop, radiusBottom, ...): after the rotateX/translate
@@ -512,11 +553,15 @@ function buildPinMarker(color: number): THREE.Group {
   const coneGeometry = new THREE.CylinderGeometry(MARKER_HEAD_RADIUS_M, 0, coneHeight, 20)
   coneGeometry.rotateX(Math.PI / 2)
   coneGeometry.translate(0, 0, coneHeight / 2)
-  group.add(new THREE.Mesh(coneGeometry, material))
+  const cone = new THREE.Mesh(coneGeometry, material)
+  cone.renderOrder = 1000
+  group.add(cone)
 
   const headGeometry = new THREE.SphereGeometry(MARKER_HEAD_RADIUS_M, 20, 16)
   headGeometry.translate(0, 0, coneHeight)
-  group.add(new THREE.Mesh(headGeometry, material))
+  const head = new THREE.Mesh(headGeometry, material)
+  head.renderOrder = 1000
+  group.add(head)
 
   return group
 }
@@ -687,11 +732,18 @@ interface ThreeDViewProps {
   origin: LatLon | null
   destination: LatLon | null
   route: GeoJSON.LineString | null
+  onMapClick: (point: LatLon) => void
 }
 
-export default function ThreeDView({ timeHour, origin, destination, route }: ThreeDViewProps) {
+export default function ThreeDView({ timeHour, origin, destination, route, onMapClick }: ThreeDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
+  // Read through a ref (rather than closing over the prop directly) inside
+  // the map's 'click' listener below, which is attached once in the
+  // mount-only effect and would otherwise keep calling a stale first-render
+  // version of onMapClick forever — same pattern MapView.tsx uses.
+  const onMapClickRef = useRef(onMapClick)
+  onMapClickRef.current = onMapClick
   const sunLightRef = useRef<THREE.DirectionalLight | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const fetchCenterRef = useRef<LatLon>(KARLSRUHE_CENTER)
@@ -727,6 +779,11 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
   const [cameraMode, setCameraMode] = useState<CameraMode>('fly')
   const [bearing, setBearing] = useState(0)
   const [flythroughActive, setFlythroughActive] = useState(false)
+  // Mirrors flythroughActive for the map's 'click' listener, which is
+  // attached once in the mount-only effect and needs a live read rather
+  // than the value from whatever render it was attached in.
+  const flythroughActiveRef = useRef(false)
+  flythroughActiveRef.current = flythroughActive
   const flythroughRafRef = useRef(0)
   // Tracks which origin/destination pair the last flythrough already played
   // for, so re-fetching the same route (e.g. dragging the shade-preference
@@ -941,10 +998,13 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
       if (startTime === null) startTime = now
       const t = Math.min(1, (now - startTime) / (durationS * 1000))
       const easedDistance = easeInOutQuad(t) * table.total
-      const { xy, bearingDeg } = pointAndBearingAtDistance(table, easedDistance)
-      smoothedBearing = lerpBearing(smoothedBearing, bearingDeg, FLYTHROUGH_BEARING_SMOOTHING)
+      const { xy } = pointAndBearingAtDistance(table, easedDistance)
+      const targetBearing = lookaheadBearingAtDistance(table, easedDistance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
+      if (targetBearing !== null) {
+        smoothedBearing = lerpBearing(smoothedBearing, targetBearing, FLYTHROUGH_BEARING_SMOOTHING)
+      }
       const [lng, lat] = offsetLngLat([fetchCenterRef.current.lon, fetchCenterRef.current.lat], xy[0], xy[1])
-      map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH })
+      map.jumpTo({ center: [lng, lat], bearing: smoothedBearing, pitch: FLYTHROUGH_PITCH, zoom: FLYTHROUGH_ZOOM })
 
       if (t < 1) {
         flythroughRafRef.current = requestAnimationFrame(tick)
@@ -972,6 +1032,16 @@ export default function ThreeDView({ timeHour, origin, destination, route }: Thr
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
     map.on('rotate', () => setBearing(map.getBearing()))
+    // Click-to-pick origin/destination, same behavior as the 2D map — this
+    // view previously had no way to set either point except the sidebar's
+    // text inputs. Ignored during a flythrough (which doesn't disable this
+    // independent 'click' handler the way it disables dragPan/scrollZoom
+    // etc.) so a stray click mid-animation can't reset the route out from
+    // under it.
+    map.on('click', (e: maplibregl.MapMouseEvent) => {
+      if (flythroughActiveRef.current) return
+      onMapClickRef.current({ lat: e.lngLat.lat, lon: e.lngLat.lng })
+    })
 
     const modelAsMercator = maplibregl.MercatorCoordinate.fromLngLat([fetchCenter.lon, fetchCenter.lat], 0)
     const modelScale = modelAsMercator.meterInMercatorCoordinateUnits()
