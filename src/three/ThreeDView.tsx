@@ -785,6 +785,62 @@ function updateSunLight(light: THREE.DirectionalLight, date: Date, coords: LatLo
   light.intensity = Math.max(dir.z, 0) * 1.8
 }
 
+// Streets aren't three.js geometry in this scene — they're rendered by
+// MapLibre's own base style underneath our custom layer (see addGroundPlane's
+// comment: our transparent ShadowMaterial plane just catches shadows over
+// whatever the real 2D map already drew). So a textured "asphalt" look for
+// them means styling the base map's own road layers with an image pattern,
+// not adding a mesh. Small (so the pattern repeats convincingly along a
+// street rather than stretching), a dark asphalt gray with faint speckle
+// noise rather than a flat fill color.
+const ASPHALT_PATTERN_ID = 'shadeka-asphalt'
+const ASPHALT_PATTERN_SIZE = 64
+
+function createAsphaltPatternImage(): ImageData | null {
+  const canvas = document.createElement('canvas')
+  canvas.width = ASPHALT_PATTERN_SIZE
+  canvas.height = ASPHALT_PATTERN_SIZE
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  ctx.fillStyle = '#48484c'
+  ctx.fillRect(0, 0, ASPHALT_PATTERN_SIZE, ASPHALT_PATTERN_SIZE)
+  for (let i = 0; i < 260; i++) {
+    const shade = 30 + Math.random() * 55
+    ctx.fillStyle = `rgba(${shade}, ${shade}, ${shade + 5}, ${0.15 + Math.random() * 0.3})`
+    ctx.fillRect(Math.random() * ASPHALT_PATTERN_SIZE, Math.random() * ASPHALT_PATTERN_SIZE, 1 + Math.random(), 1 + Math.random())
+  }
+  return ctx.getImageData(0, 0, ASPHALT_PATTERN_SIZE, ASPHALT_PATTERN_SIZE)
+}
+
+/**
+ * Give the base style's own road layers a textured asphalt look instead of
+ * their flat fill/line color. Layer ids/types vary by style (this app uses
+ * OpenFreeMap's "liberty", an OpenMapTiles-schema style whose road layers are
+ * conventionally named like road_minor/road_major/road_motorway under a
+ * "transportation" source-layer, but that naming isn't guaranteed across
+ * style updates), so this matches by a generic id substring rather than
+ * exact ids, and skips whatever a given layer's type doesn't support rather
+ * than failing the whole pass over one mismatch.
+ */
+function applyAsphaltToRoads(map: maplibregl.Map) {
+  if (map.hasImage(ASPHALT_PATTERN_ID)) return
+  const image = createAsphaltPatternImage()
+  if (!image) return
+  map.addImage(ASPHALT_PATTERN_ID, image)
+
+  for (const layer of map.getStyle()?.layers ?? []) {
+    const id = layer.id.toLowerCase()
+    if (!(id.includes('road') || id.includes('street') || id.includes('highway') || id.includes('motorway'))) continue
+    try {
+      if (layer.type === 'line') map.setPaintProperty(layer.id, 'line-pattern', ASPHALT_PATTERN_ID)
+      else if (layer.type === 'fill') map.setPaintProperty(layer.id, 'fill-pattern', ASPHALT_PATTERN_ID)
+    } catch (err) {
+      console.warn(`Could not apply asphalt pattern to layer "${layer.id}"`, err)
+    }
+  }
+}
+
 // Deliberately much farther than the light's own shadow-frustum-relative
 // position above — this one is purely visual (where the sun sphere appears
 // to sit), independent of the technical distance used for shadow mapping.
@@ -1247,6 +1303,7 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
 
     map.on('load', () => {
       map.addLayer(customLayer)
+      applyAsphaltToRoads(map)
     })
 
     // Keep loading real trees near wherever the camera ends up, not just the
