@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GeocodeResult, LatLon, RouteResponse } from '../lib/api'
+import type { GeocodeResult, LatLon, RouteResponse, WeatherSnapshot } from '../lib/api'
 import { geocodeAddress } from '../lib/api'
 import { buildTurnByTurn } from '../lib/directions'
 
@@ -19,7 +19,17 @@ interface SidebarProps {
   onPickModeChange: (mode: 'origin' | 'destination' | null) => void
   viewMode: '2d' | '3d'
   onViewModeChange: (mode: '2d' | '3d') => void
+  showWeather: boolean
+  onShowWeatherChange: (value: boolean) => void
+  weather: WeatherSnapshot | null
+  weatherLoading: boolean
+  weatherError: string | null
 }
+
+// Shade calculations everywhere else in the app assume a clear sky (see
+// suncalc-driven sun position) — this is the cutoff above which that
+// assumption is misleading enough to call out explicitly.
+const HEAVY_CLOUD_THRESHOLD_PCT = 60
 
 function formatHour(hour: number): string {
   const h = Math.floor(hour)
@@ -245,6 +255,11 @@ export default function Sidebar({
   onPickModeChange,
   viewMode,
   onViewModeChange,
+  showWeather,
+  onShowWeatherChange,
+  weather,
+  weatherLoading,
+  weatherError,
 }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { locate, locating, error: locationError } = useMyLocation(onOriginChange)
@@ -376,6 +391,60 @@ export default function Sidebar({
           <span>06:00</span>
           <span>21:00</span>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm font-medium text-slate-700">Real weather right now</span>
+            <p className="text-xs text-slate-400">
+              Shade above assumes a clear sky — check today's actual conditions.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showWeather}
+            aria-label="Toggle real weather"
+            onClick={() => onShowWeatherChange(!showWeather)}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+              showWeather ? 'bg-teal-500' : 'bg-slate-200'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                showWeather ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+
+        {showWeather && (
+          <>
+            {weatherLoading && !weather && <p className="text-xs text-slate-400">Loading…</p>}
+            {weatherError && <p className="text-xs text-rose-500">{weatherError}</p>}
+            {weather && (
+              <div className="flex items-center gap-3">
+                <span className="text-2xl leading-none">{weather.conditionIcon}</span>
+                <div>
+                  <div className="text-sm font-medium text-slate-800">
+                    {weather.conditionLabel} · {Math.round(weather.temperatureC)}°C
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {Math.round(weather.cloudCoverPct)}% cloud cover
+                    {weather.precipitationMm > 0 ? ` · ${weather.precipitationMm} mm rain` : ''}
+                  </div>
+                </div>
+              </div>
+            )}
+            {weather && weather.cloudCoverPct >= HEAVY_CLOUD_THRESHOLD_PCT && (
+              <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
+                ☁️ Mostly overcast right now — with little direct sun, shaded routes won't feel much
+                different from any other route today.
+              </p>
+            )}
+          </>
+        )}
       </div>
 
       <div className="flex rounded-xl border border-slate-100 bg-white p-1 shadow-sm">

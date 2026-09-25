@@ -170,3 +170,75 @@ export function isoAtHour(hour: number): string {
   now.setHours(hour, 0, 0, 0)
   return now.toISOString()
 }
+
+export interface WeatherSnapshot {
+  temperatureC: number
+  cloudCoverPct: number
+  precipitationMm: number
+  conditionLabel: string
+  conditionIcon: string
+}
+
+// WMO weather codes, as returned by Open-Meteo's `weather_code` field —
+// collapsed to the handful of conditions worth telling a user apart, not
+// the full spec. Codes not listed here (rare) fall back to a generic label.
+const WMO_CONDITIONS: Record<number, { label: string; icon: string }> = {
+  0: { label: 'Clear sky', icon: '☀️' },
+  1: { label: 'Mainly clear', icon: '🌤️' },
+  2: { label: 'Partly cloudy', icon: '⛅' },
+  3: { label: 'Overcast', icon: '☁️' },
+  45: { label: 'Fog', icon: '🌫️' },
+  48: { label: 'Fog', icon: '🌫️' },
+  51: { label: 'Light drizzle', icon: '🌦️' },
+  53: { label: 'Drizzle', icon: '🌦️' },
+  55: { label: 'Dense drizzle', icon: '🌦️' },
+  56: { label: 'Freezing drizzle', icon: '🌦️' },
+  57: { label: 'Freezing drizzle', icon: '🌦️' },
+  61: { label: 'Light rain', icon: '🌧️' },
+  63: { label: 'Rain', icon: '🌧️' },
+  65: { label: 'Heavy rain', icon: '🌧️' },
+  66: { label: 'Freezing rain', icon: '🌧️' },
+  67: { label: 'Freezing rain', icon: '🌧️' },
+  71: { label: 'Light snow', icon: '🌨️' },
+  73: { label: 'Snow', icon: '🌨️' },
+  75: { label: 'Heavy snow', icon: '🌨️' },
+  77: { label: 'Snow grains', icon: '🌨️' },
+  80: { label: 'Rain showers', icon: '🌦️' },
+  81: { label: 'Rain showers', icon: '🌦️' },
+  82: { label: 'Violent rain showers', icon: '⛈️' },
+  85: { label: 'Snow showers', icon: '🌨️' },
+  86: { label: 'Snow showers', icon: '🌨️' },
+  95: { label: 'Thunderstorm', icon: '⛈️' },
+  96: { label: 'Thunderstorm with hail', icon: '⛈️' },
+  99: { label: 'Thunderstorm with hail', icon: '⛈️' },
+}
+
+/**
+ * Today's real, current weather at `point` — no API key required. Backed by
+ * Open-Meteo, a free public weather API with no auth/quota for this kind of
+ * low-volume usage. The sun-position math elsewhere in this app (suncalc) is
+ * purely geometric and has no idea whether the sky is actually clear or
+ * overcast right now; this is what fills that gap.
+ */
+export async function fetchCurrentWeather(point: LatLon): Promise<WeatherSnapshot> {
+  const params = new URLSearchParams({
+    latitude: String(point.lat),
+    longitude: String(point.lon),
+    current: 'temperature_2m,precipitation,weather_code,cloud_cover',
+    timezone: 'auto',
+  })
+  const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`)
+  if (!res.ok) {
+    throw new Error(`Weather request failed: ${res.status} ${res.statusText}`)
+  }
+  const data = await res.json()
+  const current = data.current
+  const condition = WMO_CONDITIONS[current.weather_code] ?? { label: 'Unknown', icon: '🌡️' }
+  return {
+    temperatureC: current.temperature_2m,
+    cloudCoverPct: current.cloud_cover,
+    precipitationMm: current.precipitation,
+    conditionLabel: condition.label,
+    conditionIcon: condition.icon,
+  }
+}
