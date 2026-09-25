@@ -533,7 +533,7 @@ function applyOrganicCanopyBumps(geometry: THREE.BufferGeometry, strength: numbe
     v.multiplyScalar(1 + bump * strength)
     position.setXYZ(i, v.x, v.y, v.z)
 
-    const shade = Math.min(1.3, Math.max(0.6, 0.85 + bump * 0.35 + Math.max(0, ny) * 0.25))
+    const shade = Math.min(1.25, Math.max(0.78, 0.95 + bump * 0.3 + Math.max(0, ny) * 0.2))
     colors[i * 3] = shade
     colors[i * 3 + 1] = shade
     colors[i * 3 + 2] = shade
@@ -592,11 +592,11 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
   canopyGeometry.rotateX(Math.PI / 2)
   canopyGeometry.translate(0, 0, trunkHeight + canopyVerticalRadius)
   const canopyMaterial = new THREE.MeshStandardMaterial({
-    // Base lightness raised versus a flat-shaded canopy's — the per-vertex
-    // shade multiplier from applyOrganicCanopyBumps darkens most of the
-    // surface below 1, so a base tuned for a flat color would otherwise
-    // come out uniformly darker overall instead of just gaining contrast.
-    color: new THREE.Color().setHSL(0.32, 0.55, 0.42 + Math.random() * 0.12),
+    // Bright, saturated "cartoon" foliage green rather than a muted/olive
+    // one — base lightness raised versus a flat-shaded canopy's since the
+    // per-vertex shade multiplier from applyOrganicCanopyBumps still pulls
+    // part of the surface below 1.
+    color: new THREE.Color().setHSL(0.33, 0.68, 0.5 + Math.random() * 0.1),
     vertexColors: true,
     roughness: 1,
   })
