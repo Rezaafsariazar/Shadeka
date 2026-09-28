@@ -5,12 +5,18 @@ import * as SunCalc from 'suncalc'
 import {
   fetchBuildingsNearby,
   fetchTreesNearby,
-  isoAtHour,
   type BuildingsResponse,
   type LatLon,
   type TreesResponse,
 } from '../lib/api'
+import { dateAtMinutes } from '../lib/time'
+import { timeStore } from '../lib/timeStore'
 import SunIndicator from '../components/SunIndicator'
+import SegmentedToggle from '../components/ui/SegmentedToggle'
+import Icon from '../components/ui/Icon'
+import FlythroughBar from '../components/map/FlythroughBar'
+import MapHint from '../components/map/MapHint'
+import { OVERLAY_SURFACE } from '../components/map/overlay'
 
 // threebox-plugin (the usual MapLibre+three.js helper) assumes a `map.transform`
 // API that MapLibre GL JS v6's camera/projection refactor removed, so it crashes
@@ -32,6 +38,10 @@ const FETCH_RADIUS_M = 400
 const BUILDING_MASK_MARGIN_M = 80
 
 type CameraMode = 'fly' | 'walk'
+const CAMERA_OPTIONS: { value: CameraMode; label: string }[] = [
+  { value: 'fly', label: 'Free-fly' },
+  { value: 'walk', label: 'Walk' },
+]
 
 const WALK_SPEED_M_S = 6
 const WALK_PITCH = 85
@@ -74,6 +84,8 @@ const FLYTHROUGH_BEARING_LOOKAHEAD_M = 30
 // look-ahead smoothing out per-vertex noise. Low enough, combined with the
 // look-ahead, to read as a smooth, gentle turn instead of a dizzying snap.
 const FLYTHROUGH_BEARING_SMOOTHING = 0.05
+// Time constant for gliding from the old path onto a re-fetched one mid-flight.
+const FLYTHROUGH_RETARGET_BLEND_S = 0.7
 
 /** Offset a lng/lat by a distance in meters (small-area equirectangular approximation, fine at city scale). */
 function offsetLngLat(center: [number, number], dxMeters: number, dyMeters: number): [number, number] {
@@ -813,11 +825,15 @@ function getSunDirection(date: Date, coords: LatLon): THREE.Vector3 {
   return new THREE.Vector3(Math.sin(azimuthRad) * horizontal, Math.cos(azimuthRad) * horizontal, Math.sin(altitudeRad))
 }
 
+const SHADOW_MAP_SIZE = 4096
+// World size of one shadow-map texel (the frustum is always ±SHADOW_FRUSTUM_M).
+const SHADOW_TEXEL_M = (2 * SHADOW_FRUSTUM_M) / SHADOW_MAP_SIZE
+
 /** Sun-driven directional light + shadow setup, positioned via suncalc. */
 function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.HemisphereLight } {
   const light = new THREE.DirectionalLight(0xffffff, 1)
   light.castShadow = true
-  light.shadow.mapSize.set(4096, 4096)
+  light.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
   light.shadow.camera.left = -SHADOW_FRUSTUM_M
   light.shadow.camera.right = SHADOW_FRUSTUM_M
   light.shadow.camera.top = SHADOW_FRUSTUM_M
@@ -830,10 +846,10 @@ function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.Hemisphe
   // "peter-panning" a bigger depth bias alone would cause.
   light.shadow.bias = -0.0003
   light.shadow.normalBias = 0.4
-  // With PCFSoftShadowMap (see renderer.shadowMap.type below), radius sets
-  // the softening blur in shadow-map texels. Kept modest relative to the
-  // higher map resolution above so edges read as "soft" without dissolving
-  // into a barely-visible haze.
+  // With PCFShadowMap (see renderer.shadowMap.type below), radius sets the
+  // filtering blur in shadow-map texels. Kept modest relative to the map
+  // resolution so edges read as soft (and texel crawl while the sun moves is
+  // hidden) without dissolving into a barely-visible haze.
   light.shadow.radius = 1.5
   // OrthographicCamera's left/right/top/bottom/near/far are plain
   // properties — three.js only rebuilds the actual projection matrix used
@@ -858,6 +874,27 @@ function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.Hemisphe
 }
 
 /**
+ * Shift `target` so its projection onto the shadow camera's image plane lands
+ * on whole shadow-map texels. When the frustum re-centers on the camera (see
+ * the moveend handler), a sub-texel shift re-samples every shadow edge at a
+ * slightly different offset, which reads as edges crawling or popping;
+ * snapping keeps them in place. Mirrors three.js's own shadow camera setup
+ * (lookAt from the light toward its target with `up`): image axes are
+ * x = normalize(up × z) and y = z × x, where z points toward the sun.
+ */
+function snapToShadowTexels(target: THREE.Vector3, sunDir: THREE.Vector3, up: THREE.Vector3): THREE.Vector3 {
+  const xAxis = new THREE.Vector3().crossVectors(up, sunDir)
+  if (xAxis.lengthSq() < 1e-8) return target
+  xAxis.normalize()
+  const yAxis = new THREE.Vector3().crossVectors(sunDir, xAxis)
+  const a = target.dot(xAxis)
+  const b = target.dot(yAxis)
+  return target
+    .addScaledVector(xAxis, Math.round(a / SHADOW_TEXEL_M) * SHADOW_TEXEL_M - a)
+    .addScaledVector(yAxis, Math.round(b / SHADOW_TEXEL_M) * SHADOW_TEXEL_M - b)
+}
+
+/**
  * Point the directional light at `targetXY` (local meters from the fixed
  * model origin), `distance` away from it along the sun's current direction.
  * `targetXY`/`distance` should track wherever content is actually
@@ -869,9 +906,9 @@ function createSunLight(): { light: THREE.DirectionalLight; hemi: THREE.Hemisphe
  */
 function updateSunLight(light: THREE.DirectionalLight, date: Date, coords: LatLon, targetXY: [number, number], distance: number) {
   const dir = getSunDirection(date, coords)
-  const [tx, ty] = targetXY
-  light.position.set(tx + dir.x * distance, ty + dir.y * distance, dir.z * distance)
-  light.target.position.set(tx, ty, 0)
+  const target = snapToShadowTexels(new THREE.Vector3(targetXY[0], targetXY[1], 0), dir, light.shadow.camera.up)
+  light.position.copy(target).addScaledVector(dir, distance)
+  light.target.position.copy(target)
   // A stronger direct-light multiplier (paired with the dimmer ambient/hemi
   // fill above) keeps lit surfaces clearly brighter than shadowed ones, so
   // shadows read as real contrast rather than a faint tint.
@@ -973,14 +1010,13 @@ function positionSunMarker(marker: THREE.Group, date: Date, coords: LatLon) {
 }
 
 interface ThreeDViewProps {
-  timeHour: number
   origin: LatLon | null
   destination: LatLon | null
   route: GeoJSON.LineString | null
   onMapClick: (point: LatLon) => void
 }
 
-export default function ThreeDView({ timeHour, origin, destination, route, onMapClick }: ThreeDViewProps) {
+export default function ThreeDView({ origin, destination, route, onMapClick }: ThreeDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   // Read through a ref (rather than closing over the prop directly) inside
@@ -1005,8 +1041,6 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   const lastBuildingFetchCenterRef = useRef<LatLon | null>(null)
   const buildingFetchInFlightRef = useRef(false)
   const sunMarkerRef = useRef<THREE.Group | null>(null)
-  const animatedHourRef = useRef(timeHour)
-  const sunAnimFrameRef = useRef(0)
   // Local-meters point (relative to the fixed model origin) the shadow
   // camera is currently centered on — starts at the origin itself, then
   // re-centers on the live camera position as it roams (see the `moveend`
@@ -1039,6 +1073,9 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   // Last route flown, kept around purely so the "Replay" button can re-run
   // it on demand without needing a fresh origin/destination pick.
   const lastFlythroughCoordsRef = useRef<GeoJSON.Position[] | null>(null)
+  // Path the running flythrough follows; replaced in place when the route
+  // is re-fetched mid-flight.
+  const flythroughTableRef = useRef<RoutePathTable | null>(null)
   const [canReplayFlythrough, setCanReplayFlythrough] = useState(false)
   routeRef.current = route
   originPropRef.current = origin
@@ -1079,39 +1116,18 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
     mapRef.current?.triggerRepaint()
   }
 
-  // Smoothly animate the sun (light + visible marker) from wherever it
-  // currently is to the position for `targetHour`, instead of snapping
-  // instantly — so dragging the time slider reads as the sun actually
-  // moving across the sky, with shadows sweeping continuously, rather than
-  // jump-cutting between positions.
-  function animateSunTo(targetHour: number, coords: LatLon) {
+  // Put the sun (light + visible marker) wherever the shared time store's
+  // smoothed display time says it is. The store already interpolates per
+  // frame, so this is called once per animation frame while time changes
+  // and the sun sweeps continuously along its real path.
+  function applySunForDisplayTime() {
     const light = sunLightRef.current
-    if (!light) {
-      animatedHourRef.current = targetHour
-      return
-    }
-
-    cancelAnimationFrame(sunAnimFrameRef.current)
-    const fromHour = animatedHourRef.current
-    const toHour = targetHour
-    const startTime = performance.now()
-    const duration = Math.min(1200, Math.max(300, Math.abs(toHour - fromHour) * 500))
-
-    const step = (now: number) => {
-      const t = Math.min(1, (now - startTime) / duration)
-      const hour = fromHour + (toHour - fromHour) * t
-      const date = new Date(isoAtHour(hour))
-      updateSunLight(light, date, coords, sunTargetRef.current, sunDistanceRef.current)
-      if (sunMarkerRef.current) positionSunMarker(sunMarkerRef.current, date, coords)
-      mapRef.current?.triggerRepaint()
-
-      if (t < 1) {
-        sunAnimFrameRef.current = requestAnimationFrame(step)
-      } else {
-        animatedHourRef.current = toHour
-      }
-    }
-    sunAnimFrameRef.current = requestAnimationFrame(step)
+    if (!light) return
+    const date = dateAtMinutes(timeStore.getDisplay())
+    const coords = fetchCenterRef.current
+    updateSunLight(light, date, coords, sunTargetRef.current, sunDistanceRef.current)
+    if (sunMarkerRef.current) positionSunMarker(sunMarkerRef.current, date, coords)
+    mapRef.current?.triggerRepaint()
   }
 
   // Fetch real buildings around `center` (skipping if the camera hasn't moved
@@ -1231,12 +1247,13 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
     if (!map || routeCoords.length < 2) return
     cancelAnimationFrame(flythroughRafRef.current)
 
-    const table = buildRoutePathTable(routeCoords, fetchCenterRef.current)
-    if (table.total <= 0) return
+    const initialTable = buildRoutePathTable(routeCoords, fetchCenterRef.current)
+    if (initialTable.total <= 0) return
+    flythroughTableRef.current = initialTable
 
     const durationS = Math.min(
       FLYTHROUGH_MAX_DURATION_S,
-      Math.max(FLYTHROUGH_MIN_DURATION_S, table.total / FLYTHROUGH_TARGET_SPEED_M_S),
+      Math.max(FLYTHROUGH_MIN_DURATION_S, initialTable.total / FLYTHROUGH_TARGET_SPEED_M_S),
     )
 
     lastFlythroughCoordsRef.current = routeCoords
@@ -1246,14 +1263,37 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
     setFlythroughActive(true)
 
     let startTime: number | null = null
+    let lastFrame: number | null = null
     let smoothedBearing = map.getBearing()
+    let table = initialTable
+    // When the route is swapped mid-flight (see retargetFlythrough), the
+    // camera would otherwise jump from the old path to the same fraction of
+    // the new one. Instead the gap becomes an offset that decays to zero, so
+    // the camera glides over onto the new path while progress continues.
+    let offset: [number, number] = [0, 0]
+    let lastXY: [number, number] | null = null
 
     const tick = (now: number) => {
       if (startTime === null) startTime = now
+      const dt = lastFrame === null ? 0 : (now - lastFrame) / 1000
+      lastFrame = now
       const t = Math.min(1, (now - startTime) / (durationS * 1000))
-      const easedDistance = easeInOutQuad(t) * table.total
-      const { xy } = pointAndBearingAtDistance(table, easedDistance)
-      const targetBearing = lookaheadBearingAtDistance(table, easedDistance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
+      const fraction = easeInOutQuad(t)
+
+      const latest = flythroughTableRef.current
+      if (latest && latest !== table) {
+        const nextXY = pointAndBearingAtDistance(latest, fraction * latest.total).xy
+        if (lastXY) offset = [lastXY[0] - nextXY[0], lastXY[1] - nextXY[1]]
+        table = latest
+      }
+      const decay = Math.exp(-dt / FLYTHROUGH_RETARGET_BLEND_S)
+      offset = [offset[0] * decay, offset[1] * decay]
+
+      const distance = fraction * table.total
+      const base = pointAndBearingAtDistance(table, distance).xy
+      const xy: [number, number] = [base[0] + offset[0], base[1] + offset[1]]
+      lastXY = xy
+      const targetBearing = lookaheadBearingAtDistance(table, distance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
       if (targetBearing !== null) {
         smoothedBearing = lerpBearing(smoothedBearing, targetBearing, FLYTHROUGH_BEARING_SMOOTHING)
       }
@@ -1268,6 +1308,18 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       }
     }
     flythroughRafRef.current = requestAnimationFrame(tick)
+  }
+
+  // A re-fetch of the same origin/destination (time or preference changed)
+  // can return a different path. A running flythrough continues along the
+  // new path from where it is (see the blending in playRouteFlythrough);
+  // either way, Replay uses the latest path.
+  function retargetFlythrough(routeCoords: GeoJSON.Position[]) {
+    if (routeCoords.length < 2) return
+    lastFlythroughCoordsRef.current = routeCoords
+    if (!flythroughActiveRef.current) return
+    const table = buildRoutePathTable(routeCoords, fetchCenterRef.current)
+    if (table.total > 0) flythroughTableRef.current = table
   }
 
   useEffect(() => {
@@ -1327,8 +1379,7 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
         sunMarkerRef.current = sunMarker
         scene.add(sunMarker)
 
-        animatedHourRef.current = timeHour
-        const initialDate = new Date(isoAtHour(timeHour))
+        const initialDate = dateAtMinutes(timeStore.getDisplay())
         updateSunLight(light, initialDate, fetchCenter, sunTargetRef.current, sunDistanceRef.current)
         positionSunMarker(sunMarker, initialDate, fetchCenter)
 
@@ -1433,15 +1484,17 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
         // matching comment in createSunLight for why the shadow camera would
         // otherwise silently keep rendering with its previous frustum.
         light.shadow.camera.updateProjectionMatrix()
-        const date = new Date(isoAtHour(animatedHourRef.current))
+        const date = dateAtMinutes(timeStore.getDisplay())
         updateSunLight(light, date, fetchCenter, sunTargetRef.current, sunDistanceRef.current)
         map.triggerRepaint()
       }
     }
     map.on('moveend', onMoveEnd)
 
+    const unsubscribeTime = timeStore.subscribeDisplay(applySunForDisplayTime)
+
     return () => {
-      cancelAnimationFrame(sunAnimFrameRef.current)
+      unsubscribeTime()
       cancelAnimationFrame(flythroughRafRef.current)
       map.off('moveend', onMoveEnd)
       map.remove()
@@ -1488,7 +1541,10 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
       return
     }
     const key = `${origin.lat.toFixed(6)},${origin.lon.toFixed(6)}|${destination.lat.toFixed(6)},${destination.lon.toFixed(6)}`
-    if (key === flythroughKeyRef.current) return
+    if (key === flythroughKeyRef.current) {
+      retargetFlythrough(route.coordinates)
+      return
+    }
     flythroughKeyRef.current = key
 
     const coords = route.coordinates
@@ -1508,13 +1564,6 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
   useEffect(() => {
     syncMarkers()
   }, [origin, destination])
-
-  // Drive the sun position from the shared time-of-day slider, animating
-  // smoothly to the new position rather than snapping.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    animateSunTo(timeHour, origin ?? KARLSRUHE_CENTER)
-  }, [timeHour, origin])
 
   // Camera mode: free-fly uses MapLibre's default interaction handlers;
   // walk mode disables them in favor of WASD + mouse-drag-look below. A
@@ -1627,29 +1676,19 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       <div className="absolute left-4 top-4 z-10 flex flex-col items-start gap-2">
-        <div className="flex overflow-hidden rounded-lg border border-white/20 bg-slate-900/80 text-xs font-medium text-white shadow-lg backdrop-blur">
-          <button
-            type="button"
-            onClick={() => {
-              stopFlythrough()
-              setCameraMode('fly')
-            }}
-            className={`px-3 py-2 transition-colors ${cameraMode === 'fly' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
-          >
-            Free-fly
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              stopFlythrough()
-              setCameraMode('walk')
-            }}
-            className={`px-3 py-2 transition-colors ${cameraMode === 'walk' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
-          >
-            Walk
-          </button>
-        </div>
-        <SunIndicator timeHour={timeHour} bearing={bearing} center={fetchCenterRef.current} />
+        <SegmentedToggle
+          label="Camera mode"
+          tone="overlay"
+          size="sm"
+          className="w-48"
+          value={cameraMode}
+          onChange={(mode) => {
+            stopFlythrough()
+            setCameraMode(mode)
+          }}
+          options={CAMERA_OPTIONS}
+        />
+        <SunIndicator bearing={bearing} center={fetchCenterRef.current} />
         {!flythroughActive && canReplayFlythrough && (
           <button
             type="button"
@@ -1657,36 +1696,22 @@ export default function ThreeDView({ timeHour, origin, destination, route, onMap
               const coords = lastFlythroughCoordsRef.current
               if (coords) playRouteFlythrough(coords)
             }}
-            className="rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs font-medium text-white shadow-lg backdrop-blur transition-colors hover:bg-slate-900/90"
+            className={`flex h-9 items-center gap-2 px-3 text-xs font-semibold text-ink-soft transition-colors hover:bg-white ${OVERLAY_SURFACE}`}
           >
-            ↻ Replay flythrough
+            <Icon name="replay" size={16} className="text-brand" />
+            Replay flythrough
           </button>
         )}
       </div>
       {flythroughActive && (
-        <div className="absolute left-1/2 top-4 z-10 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          <div className="flex items-center justify-between gap-3">
-            <span>🎬 Flying the route…</span>
-            <button
-              type="button"
-              onClick={stopFlythrough}
-              className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
-            >
-              Skip
-            </button>
-          </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/15">
-            <div
-              className="h-full rounded-full bg-teal-400"
-              style={{ width: `${Math.round(flythroughProgress * 100)}%` }}
-            />
-          </div>
+        <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2">
+          <FlythroughBar progress={flythroughProgress} onSkip={stopFlythrough} />
         </div>
       )}
       {cameraMode === 'walk' && !flythroughActive && (
-        <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          WASD to move · drag to look
-        </div>
+        <MapHint icon="keyboard" className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+          WASD or arrows to move · drag to look around
+        </MapHint>
       )}
     </div>
   )

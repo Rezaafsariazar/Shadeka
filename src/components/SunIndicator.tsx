@@ -1,8 +1,10 @@
 import * as SunCalc from 'suncalc'
-import { isoAtHour, type LatLon } from '../lib/api'
+import type { LatLon } from '../lib/api'
+import { useDisplayTime } from '../hooks/useTime'
+import { dateAtMinutes } from '../lib/time'
+import { OVERLAY_SURFACE } from './map/overlay'
 
 interface SunIndicatorProps {
-  timeHour: number
   bearing: number
   center: LatLon
 }
@@ -21,8 +23,10 @@ function compassLabel(azimuthDeg: number): string {
 // SunCalc.getPosition returns altitude/azimuth already in degrees, azimuth
 // clockwise from north (verified against the installed v2.0.1 README) — no
 // radians conversion needed here, unlike the classic suncalc.js API.
-export default function SunIndicator({ timeHour, bearing, center }: SunIndicatorProps) {
-  const date = new Date(isoAtHour(timeHour))
+export default function SunIndicator({ bearing, center }: SunIndicatorProps) {
+  // Follows the same smoothed time as the 3D sun and 2D shadows, so the dot
+  // glides in sync with them instead of jumping on each slider step.
+  const date = dateAtMinutes(useDisplayTime())
   const { altitude, azimuth } = SunCalc.getPosition(date, center.lat, center.lon)
   const isUp = altitude > 0
 
@@ -33,13 +37,16 @@ export default function SunIndicator({ timeHour, bearing, center }: SunIndicator
 
   return (
     <div
-      className="flex flex-col items-center gap-1 rounded-xl border border-slate-200/70 bg-white/85 px-2 py-2 shadow-md backdrop-blur-sm"
+      role="img"
+      aria-label={isUp ? `Sun ${Math.round(altitude)} degrees high in the ${compassLabel(azimuth)}` : 'Sun below the horizon'}
+      className={`flex flex-col items-center gap-1.5 px-2 pb-2 pt-2 ${OVERLAY_SURFACE}`}
       title={`Sun: ${Math.round(azimuth)}° azimuth, ${Math.round(altitude)}° elevation`}
     >
       <div
-        className="relative rounded-full border border-slate-300 bg-sky-50"
+        className="relative rounded-full bg-gradient-to-b from-sky-50 to-sky-100 ring-1 ring-sky-200"
         style={{ width: WIDGET_SIZE, height: WIDGET_SIZE }}
       >
+        <div className="absolute inset-[22%] rounded-full ring-1 ring-sky-200/80" aria-hidden="true" />
         {/* Rotates opposite the map bearing so "up" always tracks true north,
             keeping the sun dot's screen position correct as the user rotates
             the map (bearing is measured counter-clockwise from north). */}
@@ -47,11 +54,11 @@ export default function SunIndicator({ timeHour, bearing, center }: SunIndicator
           className="absolute inset-0"
           style={{ transform: `rotate(${-bearing}deg)` }}
         >
-          <span className="absolute left-1/2 top-0.5 -translate-x-1/2 text-[9px] font-semibold text-slate-400">
+          <span className="absolute left-1/2 top-0.5 -translate-x-1/2 text-[9px] font-semibold text-ink-muted">
             N
           </span>
           <div
-            className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top,opacity] duration-300"
+            className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full transition-opacity duration-300"
             style={{
               left: dotX,
               top: dotY,
@@ -62,7 +69,7 @@ export default function SunIndicator({ timeHour, bearing, center }: SunIndicator
           />
         </div>
       </div>
-      <span className="text-[10px] font-medium leading-none text-slate-500">
+      <span className="text-[11px] font-medium leading-none tabular-nums text-ink-soft">
         {isUp ? `${Math.round(altitude)}° ${compassLabel(azimuth)}` : 'below horizon'}
       </span>
     </div>
