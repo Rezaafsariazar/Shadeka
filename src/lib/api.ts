@@ -170,41 +170,43 @@ export interface WeatherSnapshot {
   cloudCoverPct: number
   precipitationMm: number
   conditionLabel: string
-  conditionIcon: string
+  conditionKind: WeatherKind
 }
+
+export type WeatherKind = 'clear' | 'partly' | 'cloudy' | 'fog' | 'rain' | 'snow' | 'storm'
 
 // WMO weather codes, as returned by Open-Meteo's `weather_code` field —
 // collapsed to the handful of conditions worth telling a user apart, not
 // the full spec. Codes not listed here (rare) fall back to a generic label.
-const WMO_CONDITIONS: Record<number, { label: string; icon: string }> = {
-  0: { label: 'Clear sky', icon: '☀️' },
-  1: { label: 'Mainly clear', icon: '🌤️' },
-  2: { label: 'Partly cloudy', icon: '⛅' },
-  3: { label: 'Overcast', icon: '☁️' },
-  45: { label: 'Fog', icon: '🌫️' },
-  48: { label: 'Fog', icon: '🌫️' },
-  51: { label: 'Light drizzle', icon: '🌦️' },
-  53: { label: 'Drizzle', icon: '🌦️' },
-  55: { label: 'Dense drizzle', icon: '🌦️' },
-  56: { label: 'Freezing drizzle', icon: '🌦️' },
-  57: { label: 'Freezing drizzle', icon: '🌦️' },
-  61: { label: 'Light rain', icon: '🌧️' },
-  63: { label: 'Rain', icon: '🌧️' },
-  65: { label: 'Heavy rain', icon: '🌧️' },
-  66: { label: 'Freezing rain', icon: '🌧️' },
-  67: { label: 'Freezing rain', icon: '🌧️' },
-  71: { label: 'Light snow', icon: '🌨️' },
-  73: { label: 'Snow', icon: '🌨️' },
-  75: { label: 'Heavy snow', icon: '🌨️' },
-  77: { label: 'Snow grains', icon: '🌨️' },
-  80: { label: 'Rain showers', icon: '🌦️' },
-  81: { label: 'Rain showers', icon: '🌦️' },
-  82: { label: 'Violent rain showers', icon: '⛈️' },
-  85: { label: 'Snow showers', icon: '🌨️' },
-  86: { label: 'Snow showers', icon: '🌨️' },
-  95: { label: 'Thunderstorm', icon: '⛈️' },
-  96: { label: 'Thunderstorm with hail', icon: '⛈️' },
-  99: { label: 'Thunderstorm with hail', icon: '⛈️' },
+const WMO_CONDITIONS: Record<number, { label: string; kind: WeatherKind }> = {
+  0: { label: 'Clear sky', kind: 'clear' },
+  1: { label: 'Mainly clear', kind: 'partly' },
+  2: { label: 'Partly cloudy', kind: 'partly' },
+  3: { label: 'Overcast', kind: 'cloudy' },
+  45: { label: 'Fog', kind: 'fog' },
+  48: { label: 'Fog', kind: 'fog' },
+  51: { label: 'Light drizzle', kind: 'rain' },
+  53: { label: 'Drizzle', kind: 'rain' },
+  55: { label: 'Dense drizzle', kind: 'rain' },
+  56: { label: 'Freezing drizzle', kind: 'rain' },
+  57: { label: 'Freezing drizzle', kind: 'rain' },
+  61: { label: 'Light rain', kind: 'rain' },
+  63: { label: 'Rain', kind: 'rain' },
+  65: { label: 'Heavy rain', kind: 'rain' },
+  66: { label: 'Freezing rain', kind: 'rain' },
+  67: { label: 'Freezing rain', kind: 'rain' },
+  71: { label: 'Light snow', kind: 'snow' },
+  73: { label: 'Snow', kind: 'snow' },
+  75: { label: 'Heavy snow', kind: 'snow' },
+  77: { label: 'Snow grains', kind: 'snow' },
+  80: { label: 'Rain showers', kind: 'rain' },
+  81: { label: 'Rain showers', kind: 'rain' },
+  82: { label: 'Violent rain showers', kind: 'storm' },
+  85: { label: 'Snow showers', kind: 'snow' },
+  86: { label: 'Snow showers', kind: 'snow' },
+  95: { label: 'Thunderstorm', kind: 'storm' },
+  96: { label: 'Thunderstorm with hail', kind: 'storm' },
+  99: { label: 'Thunderstorm with hail', kind: 'storm' },
 }
 
 /**
@@ -240,12 +242,12 @@ export async function fetchWeatherAtHour(point: LatLon, hour: number): Promise<W
   let index = times.findIndex((t) => Number(t.slice(11, 13)) === targetHour)
   if (index === -1) index = 0
 
-  const condition = WMO_CONDITIONS[data.hourly.weather_code[index]] ?? { label: 'Unknown', icon: '🌡️' }
+  const condition = WMO_CONDITIONS[data.hourly.weather_code[index]] ?? { label: 'Unknown', kind: 'cloudy' as const }
   return {
     temperatureC: data.hourly.temperature_2m[index],
     cloudCoverPct: data.hourly.cloud_cover[index],
     precipitationMm: data.hourly.precipitation[index],
     conditionLabel: condition.label,
-    conditionIcon: condition.icon,
+    conditionKind: condition.kind,
   }
 }

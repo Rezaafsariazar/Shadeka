@@ -28,6 +28,8 @@ export default function App() {
   const [route, setRoute] = useState<RouteResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Bumped by "Try again" to re-run the route fetch with unchanged inputs.
+  const [retryCount, setRetryCount] = useState(0)
 
   const [showWeather, setShowWeather] = useState(false)
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null)
@@ -46,6 +48,20 @@ export default function App() {
       // switch views manually to see it.
       setViewMode('3d')
     }
+  }
+
+  // Setting a point from the address fields also advances the pick-on-map
+  // flow, so its "click the map to set…" hint doesn't linger for a point
+  // that's already set. Functional updates: address fields commit on a
+  // short blur delay, so these can run from a closure a render behind.
+  function handleOriginChange(point: LatLon | null) {
+    setOrigin(point)
+    if (point) setPickMode((mode) => (mode === 'origin' ? (destination ? null : 'destination') : mode))
+  }
+
+  function handleDestinationChange(point: LatLon | null) {
+    setDestination(point)
+    if (point) setPickMode((mode) => (mode === 'destination' ? null : mode))
   }
 
   useEffect(() => {
@@ -78,7 +94,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [origin, destination, debouncedShadePref, settledMinutes])
+  }, [origin, destination, debouncedShadePref, settledMinutes, retryCount])
 
   useEffect(() => {
     if (!showWeather) return
@@ -116,14 +132,15 @@ export default function App() {
       <Sidebar
         origin={origin}
         destination={destination}
-        onOriginChange={setOrigin}
-        onDestinationChange={setDestination}
+        onOriginChange={handleOriginChange}
+        onDestinationChange={handleDestinationChange}
         shadePref={shadePref}
         onShadePrefChange={setShadePref}
         settledMinutes={settledMinutes}
         route={route}
         loading={loading}
         error={error}
+        onRetry={() => setRetryCount((n) => n + 1)}
         pickMode={pickMode}
         onPickModeChange={setPickMode}
         viewMode={viewMode}
