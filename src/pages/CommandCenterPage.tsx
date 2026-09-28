@@ -111,7 +111,7 @@ export default function CommandCenterPage({ planner: p }: { planner: Planner }) 
         <main className="flex min-h-[60vh] flex-col gap-3 lg:min-h-0">
           <div className="hud-frame relative flex-1 overflow-hidden rounded-sm">
             {p.viewMode === '2d' ? (
-              <MapView origin={p.origin} destination={p.destination} route={routeGeometry} onMapClick={p.handleMapClick} />
+              <MapView origin={p.origin} destination={p.destination} route={routeGeometry} onMapClick={p.handleMapClick} theme="hud" />
             ) : (
               <ThreeDView
                 origin={p.origin}
@@ -119,6 +119,7 @@ export default function CommandCenterPage({ planner: p }: { planner: Planner }) 
                 route={routeGeometry}
                 onMapClick={p.handleMapClick}
                 replayRequest={replayRequest}
+                theme="hud"
               />
             )}
             <div className="pointer-events-none absolute inset-0 border border-brand-accent/10" aria-hidden="true" />

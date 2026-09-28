@@ -16,7 +16,7 @@ export default function BrandHeader({ children }: { children?: ReactNode }) {
           <h1 className="text-lg font-bold leading-tight tracking-tight text-ink">
             Shade<span className="text-brand-ink">KA</span>
           </h1>
-          <p className="truncate text-xs text-ink-muted">Shaded walks in Karlsruhe</p>
+          <p className="truncate text-xs text-ink-muted">Walk in the shade</p>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">{children}</div>

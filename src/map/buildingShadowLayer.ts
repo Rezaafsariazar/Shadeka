@@ -27,8 +27,11 @@ const MIN_ALTITUDE_DEG = 2
 // Fade shadows in/out over the last few degrees above the horizon instead of
 // popping when the sun rises or sets.
 const FADE_ALTITUDE_DEG = 5
-const SHADOW_RGB: [number, number, number] = [15 / 255, 42 / 255, 64 / 255]
-const SHADOW_ALPHA = 0.3
+export interface ShadowStyle {
+  rgb: [number, number, number]
+  alpha: number
+}
+const DEFAULT_SHADOW_STYLE: ShadowStyle = { rgb: [15 / 255, 42 / 255, 64 / 255], alpha: 0.3 }
 
 const MASK_VS = `#version 300 es
 uniform mat4 u_matrix;
@@ -113,7 +116,7 @@ function distanceMeters(a: LatLon, b: LatLon): number {
  * meters-at-origin offsets from it (float32-safe), and the model matrix maps
  * them back to mercator exactly.
  */
-export function createBuildingShadowLayer(origin: LatLon): BuildingShadowLayer {
+export function createBuildingShadowLayer(origin: LatLon, style: ShadowStyle = DEFAULT_SHADOW_STYLE): BuildingShadowLayer {
   const originMerc = maplibregl.MercatorCoordinate.fromLngLat([origin.lon, origin.lat], 0)
   const scale = originMerc.meterInMercatorCoordinateUnits()
 
@@ -306,8 +309,8 @@ export function createBuildingShadowLayer(origin: LatLon): BuildingShadowLayer {
       c.activeTexture(c.TEXTURE0)
       c.bindTexture(c.TEXTURE_2D, maskTexture)
       c.uniform1i(c.getUniformLocation(compositeProgram, 'u_mask'), 0)
-      const a = SHADOW_ALPHA * alpha
-      c.uniform4f(c.getUniformLocation(compositeProgram, 'u_color'), SHADOW_RGB[0] * a, SHADOW_RGB[1] * a, SHADOW_RGB[2] * a, a)
+      const a = style.alpha * alpha
+      c.uniform4f(c.getUniformLocation(compositeProgram, 'u_color'), style.rgb[0] * a, style.rgb[1] * a, style.rgb[2] * a, a)
       c.enable(c.BLEND)
       c.blendFunc(c.ONE, c.ONE_MINUS_SRC_ALPHA)
       c.bindVertexArray(quadVao)

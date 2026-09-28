@@ -12,6 +12,7 @@ import {
 import { dateAtMinutes } from '../lib/time'
 import { timeStore } from '../lib/timeStore'
 import SunIndicator from '../components/SunIndicator'
+import { applyDarkBasemap, type MapTheme } from '../map/darkBasemap'
 import SegmentedToggle from '../components/ui/SegmentedToggle'
 import Icon from '../components/ui/Icon'
 import FlythroughBar from '../components/map/FlythroughBar'
@@ -302,7 +303,7 @@ const buildingWallUVGenerator: THREE.ExtrudeGeometryOptions['UVGenerator'] = {
 }
 
 /** Extrude one building footprint (a single polygon's rings, already in local meters) to its real height. */
-function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, origin: LatLon): THREE.Mesh | null {
+function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, origin: LatLon, theme: MapTheme): THREE.Mesh | null {
   if (rings.length === 0 || rings[0].length < 3) return null
 
   const toLocal = (pos: GeoJSON.Position) => {
@@ -326,7 +327,12 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
   // (paint["fill-extrusion-color"] = "hsl(35, 8%, 85%)"), so buildings inside
   // our fetch radius read as the same material as the base map's buildings
   // just outside it, not a visibly different (cooler/grayer) one.
-  const baseColor = new THREE.Color().setHSL(35 / 360, 0.08, 0.83 + Math.random() * 0.04)
+  // The command center's dark basemap gets dark slate-blue buildings instead,
+  // matching its recolored building-3d layer.
+  const baseColor =
+    theme === 'hud'
+      ? new THREE.Color().setHSL(208 / 360, 0.2, 0.3 + Math.random() * 0.05)
+      : new THREE.Color().setHSL(35 / 360, 0.08, 0.83 + Math.random() * 0.04)
 
   // MapLibre's own fill-extrusion layer always paints a roof at the exact
   // flat paint color and only tints the vertical walls by a fixed light — it
@@ -342,7 +348,11 @@ function buildExtrudedBuilding(rings: GeoJSON.Position[][], heightM: number, ori
   // shading. It's a shadow-receiving variant (see
   // createShadowReceivingFlatMaterial) rather than a plain MeshBasicMaterial,
   // so a taller neighbor's shadow still shows when it lands on this roof.
-  const capMaterial = createShadowReceivingFlatMaterial(baseColor)
+  // The roof material is unlit, so on the dark theme it needs a darker color
+  // than the walls to sit in the same value range.
+  const capMaterial = createShadowReceivingFlatMaterial(
+    theme === 'hud' ? new THREE.Color().setHSL(208 / 360, 0.22, 0.12 + Math.random() * 0.03) : baseColor,
+  )
 
   const wallMaterial = new THREE.MeshStandardMaterial({
     color: baseColor,
@@ -375,7 +385,7 @@ const DEFAULT_BUILDING_HEIGHT_M = 9
  * fetch circles overlap as the camera moves, so buildings already added
  * (tracked by id in `loadedIds`) are skipped rather than drawn twice.
  */
-function addRealBuildings(scene: THREE.Scene, data: BuildingsResponse, origin: LatLon, loadedIds: Set<number>) {
+function addRealBuildings(scene: THREE.Scene, data: BuildingsResponse, origin: LatLon, loadedIds: Set<number>, theme: MapTheme) {
   for (const feature of data.features) {
     const id = feature.properties?.id
     if (id !== undefined) {
@@ -393,7 +403,7 @@ function addRealBuildings(scene: THREE.Scene, data: BuildingsResponse, origin: L
           : []
 
     for (const rings of polygons) {
-      const mesh = buildExtrudedBuilding(rings, height, origin)
+      const mesh = buildExtrudedBuilding(rings, height, origin, theme)
       if (mesh) scene.add(mesh)
     }
   }
@@ -666,14 +676,14 @@ function buildTreeGroup(feature: TreesResponse['features'][number], origin: LatL
 const GROUND_PLANE_SIZE_M = 20000
 
 /** Flat ground plane so buildings/trees have a shadow-receiving surface. */
-function addGroundPlane(scene: THREE.Scene, size: number) {
+function addGroundPlane(scene: THREE.Scene, size: number, opacity: number) {
   const geometry = new THREE.PlaneGeometry(size, size)
   // ShadowMaterial is fully transparent except where a shadow lands, so the
   // real basemap (roads, parks, sidewalks — already rendered by MapLibre
   // beneath our layer) shows through everywhere else instead of being
   // replaced by one flat color. It still needs receiveShadow to work as a
   // shadow-catching surface for buildings/trees.
-  const material = new THREE.ShadowMaterial({ opacity: 0.55 })
+  const material = new THREE.ShadowMaterial({ opacity })
   const mesh = new THREE.Mesh(geometry, material)
   mesh.receiveShadow = true
   scene.add(mesh)
@@ -1016,9 +1026,10 @@ interface ThreeDViewProps {
   onMapClick: (point: LatLon) => void
   /** Incrementing this replays the flythrough of the current route (keyboard shortcut). */
   replayRequest?: number
+  theme?: MapTheme
 }
 
-export default function ThreeDView({ origin, destination, route, onMapClick, replayRequest = 0 }: ThreeDViewProps) {
+export default function ThreeDView({ origin, destination, route, onMapClick, replayRequest = 0, theme = 'light' }: ThreeDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   // Read through a ref (rather than closing over the prop directly) inside
@@ -1148,7 +1159,7 @@ export default function ThreeDView({ origin, destination, route, onMapClick, rep
     fetchBuildingsNearby(center, FETCH_RADIUS_M)
       .then((buildings) => {
         if (sceneRef.current !== scene) return // layer/scene was torn down while this was in flight
-        addRealBuildings(scene, buildings, origin, loadedBuildingIdsRef.current)
+        addRealBuildings(scene, buildings, origin, loadedBuildingIdsRef.current, theme)
         // Only mask the base style's own 3D buildings once ours have loaded,
         // so a failed fetch still leaves the default city intact.
         buildingCirclesRef.current.push({ center, radiusM: FETCH_RADIUS_M + BUILDING_MASK_MARGIN_M })
@@ -1385,7 +1396,8 @@ export default function ThreeDView({ origin, destination, route, onMapClick, rep
         updateSunLight(light, initialDate, fetchCenter, sunTargetRef.current, sunDistanceRef.current)
         positionSunMarker(sunMarker, initialDate, fetchCenter)
 
-        addGroundPlane(scene, GROUND_PLANE_SIZE_M)
+        // Stronger on the dark basemap so shadows keep their contrast.
+        addGroundPlane(scene, GROUND_PLANE_SIZE_M, theme === 'hud' ? 0.62 : 0.55)
         syncRouteMesh()
         syncMarkers()
         refreshTreesNear(scene, fetchCenter, fetchCenter)
@@ -1441,8 +1453,9 @@ export default function ThreeDView({ origin, destination, route, onMapClick, rep
     }
 
     map.on('load', () => {
+      if (theme === 'hud') applyDarkBasemap(map)
+      else applyAsphaltToRoads(map)
       map.addLayer(customLayer)
-      applyAsphaltToRoads(map)
     })
 
     // Keep loading real trees near wherever the camera ends up, not just the
