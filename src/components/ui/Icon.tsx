@@ -28,6 +28,7 @@ export type IconName =
   | 'zoom'
   | 'search'
   | 'close'
+  | 'dashboard'
 
 const PATHS: Record<IconName, ReactNode> = {
   pin: (
@@ -130,6 +131,14 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   close: <path d="M6 6l12 12M18 6 6 18" />,
+  dashboard: (
+    <>
+      <rect x="3" y="3" width="8" height="10" rx="1.5" />
+      <rect x="13" y="3" width="8" height="6" rx="1.5" />
+      <rect x="13" y="11" width="8" height="10" rx="1.5" />
+      <rect x="3" y="15" width="8" height="6" rx="1.5" />
+    </>
+  ),
 }
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

@@ -1014,9 +1014,11 @@ interface ThreeDViewProps {
   destination: LatLon | null
   route: GeoJSON.LineString | null
   onMapClick: (point: LatLon) => void
+  /** Incrementing this replays the flythrough of the current route (keyboard shortcut). */
+  replayRequest?: number
 }
 
-export default function ThreeDView({ origin, destination, route, onMapClick }: ThreeDViewProps) {
+export default function ThreeDView({ origin, destination, route, onMapClick, replayRequest = 0 }: ThreeDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   // Read through a ref (rather than closing over the prop directly) inside
@@ -1559,6 +1561,13 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
     }
   }, [route, origin, destination])
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (replayRequest === 0) return
+    const coords = lastFlythroughCoordsRef.current ?? routeRef.current?.coordinates
+    if (coords && sceneRef.current) playRouteFlythrough(coords)
+  }, [replayRequest])
+
   // Keep the origin/destination pin markers in sync.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -1673,7 +1682,7 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
   }, [cameraMode, flythroughActive])
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" data-camera-mode={cameraMode}>
       <div ref={containerRef} className="h-full w-full" />
       <div className="absolute left-4 top-4 z-10 flex flex-col items-start gap-2">
         <SegmentedToggle

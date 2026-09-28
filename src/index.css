@@ -10,6 +10,7 @@
  */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   --color-ink: #0f172a;
   --color-ink-soft: #334155;
@@ -23,6 +24,15 @@
   --color-brand-hover: #115e59;
   --color-brand-soft: #f0fdfa;
   --color-brand-accent: #14b8a6;
+  --color-brand-ink: #0f766e;
+  --color-surface-muted: #f1f5f9;
+  --color-surface-raised: #ffffff;
+  --color-overlay: rgb(255 255 255 / 0.9);
+  --color-switch-off: #cbd5e1;
+  --color-danger-ink: #be123c;
+  --color-danger-line: #fda4af;
+  --color-focus: #0f766e;
+  --color-hud-amber: #fbbf24;
   --color-origin: #14b8a6;
   --color-destination: #fb7185;
   --color-sun: #f59e0b;
@@ -75,7 +85,7 @@ body {
 
 /* One consistent, clearly visible keyboard focus ring everywhere. */
 :focus-visible {
-  outline: 2px solid var(--color-brand);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -214,4 +224,100 @@ body {
 }
 .transit-tooltip .maplibregl-popup-tip {
   display: none;
+}
+
+/*
+ * Command center ("HUD") theme. Re-points the same tokens at a dark,
+ * cyan-accented palette, so shared components (inputs, sliders, toggles)
+ * restyle themselves. Muted text #8aa0b4 is ~6.9:1 on the #0b131b surface.
+ */
+.theme-hud {
+  --color-ink: #e2f3ff;
+  --color-ink-soft: #b3c7d9;
+  --color-ink-muted: #8aa0b4;
+  --color-line: rgb(56 189 248 / 0.2);
+  --color-line-soft: rgb(56 189 248 / 0.1);
+  --color-surface: #0b131b;
+  --color-surface-sunken: #08101a;
+  --color-surface-muted: #122130;
+  --color-surface-raised: #1b3144;
+  --color-overlay: rgb(8 14 20 / 0.82);
+  --color-brand: #0e7490;
+  --color-brand-hover: #155e75;
+  --color-brand-soft: rgb(34 211 238 / 0.12);
+  --color-brand-accent: #22d3ee;
+  --color-brand-ink: #67e8f9;
+  --color-switch-off: #2a3b4b;
+  --color-danger-ink: #fda4af;
+  --color-danger-line: #9f1239;
+  --color-focus: #22d3ee;
+  --shadow-overlay: 0 0 0 1px rgb(34 211 238 / 0.08), 0 10px 30px -10px rgb(0 0 0 / 0.7);
+
+  color: var(--color-ink);
+  background-color: #070b10;
+  background-image:
+    radial-gradient(ellipse at 50% -20%, rgb(34 211 238 / 0.12), transparent 60%),
+    linear-gradient(rgb(56 189 248 / 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(56 189 248 / 0.04) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+  color-scheme: dark;
+}
+
+.theme-hud .range-time::-webkit-slider-thumb {
+  border-color: #0b131b;
+}
+.theme-hud .maplibregl-ctrl-group {
+  background: rgb(8 14 20 / 0.82) !important;
+  border-color: rgb(56 189 248 / 0.2);
+}
+.theme-hud .maplibregl-ctrl-group button + button {
+  border-top-color: rgb(56 189 248 / 0.15);
+}
+.theme-hud .maplibregl-ctrl-group button:hover {
+  background-color: rgb(34 211 238 / 0.1) !important;
+}
+.theme-hud .maplibregl-ctrl-icon {
+  filter: invert(1) hue-rotate(180deg) brightness(1.1);
+}
+.theme-hud .maplibregl-ctrl-attrib {
+  background: rgb(8 14 20 / 0.7);
+  color: #8aa0b4;
+}
+.theme-hud .maplibregl-ctrl-attrib a {
+  color: #b3c7d9;
+}
+.theme-hud .transit-tooltip .maplibregl-popup-content {
+  background: #0b131b;
+  border-color: rgb(56 189 248 / 0.2);
+}
+
+/* A glowing HUD frame: thin cyan border with brighter corner brackets. */
+.hud-frame {
+  position: relative;
+  border: 1px solid rgb(56 189 248 / 0.16);
+  background: linear-gradient(180deg, rgb(13 25 36 / 0.85), rgb(9 17 25 / 0.85));
+  box-shadow: inset 0 1px 0 rgb(125 211 252 / 0.06), 0 0 24px -12px rgb(34 211 238 / 0.35);
+}
+.hud-frame::before,
+.hud-frame::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  border-color: rgb(34 211 238 / 0.75);
+  border-style: solid;
+}
+.hud-frame::before {
+  top: -1px;
+  left: -1px;
+  border-width: 2px 0 0 2px;
+}
+.hud-frame::after {
+  bottom: -1px;
+  right: -1px;
+  border-width: 0 2px 2px 0;
+}
+.hud-glow {
+  text-shadow: 0 0 18px rgb(34 211 238 / 0.45);
 }

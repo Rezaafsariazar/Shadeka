@@ -68,14 +68,14 @@ export default function RouteInputs({
           {locating ? 'Locating…' : 'Use my location'}
         </Button>
         {pickMode && (
-          <span className="flex items-center gap-1.5 text-xs font-medium text-brand" aria-live="polite">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-brand-ink" aria-live="polite">
             <span className="h-1.5 w-1.5 animate-shimmer rounded-full bg-brand-accent" />
             Click the map to set the {pickMode === 'origin' ? 'start' : 'destination'}
           </span>
         )}
       </div>
       {locationError && (
-        <p className="flex items-start gap-1.5 text-xs text-rose-700" role="alert">
+        <p className="flex items-start gap-1.5 text-xs text-danger-ink" role="alert">
           <Icon name="alert" size={14} className="mt-px shrink-0" />
           {locationError}
         </p>

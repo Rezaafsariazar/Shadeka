@@ -12,7 +12,7 @@ export default function EmptyState() {
       <ol className="mt-2 flex flex-col gap-1.5">
         {STEPS.map((step, i) => (
           <li key={step} className="flex items-start gap-2.5 text-sm text-ink-soft">
-            <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-brand ring-1 ring-teal-600/20">
+            <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-brand-ink ring-1 ring-teal-600/20">
               {i + 1}
             </span>
             {step}

@@ -14,12 +14,12 @@ export default function BrandHeader({ children }: { children?: ReactNode }) {
         </div>
         <div className="min-w-0">
           <h1 className="text-lg font-bold leading-tight tracking-tight text-ink">
-            Shade<span className="text-brand">KA</span>
+            Shade<span className="text-brand-ink">KA</span>
           </h1>
           <p className="truncate text-xs text-ink-muted">Shaded walks in Karlsruhe</p>
         </div>
       </div>
-      {children}
+      <div className="flex shrink-0 items-center gap-2">{children}</div>
     </header>
   )
 }

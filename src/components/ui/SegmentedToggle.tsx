@@ -31,7 +31,7 @@ export default function SegmentedToggle<T extends string>({
   className = '',
 }: SegmentedToggleProps<T>) {
   const index = Math.max(0, options.findIndex((o) => o.value === value))
-  const container = tone === 'overlay' ? 'bg-white/90 border border-slate-200/80 shadow-(--shadow-overlay) backdrop-blur' : 'bg-slate-100'
+  const container = tone === 'overlay' ? 'bg-overlay border border-line shadow-(--shadow-overlay) backdrop-blur' : 'bg-surface-muted'
   const height = size === 'sm' ? 'h-8 text-xs' : 'h-10 text-sm'
 
   function move(delta: number) {
@@ -57,7 +57,7 @@ export default function SegmentedToggle<T extends string>({
     >
       <span
         aria-hidden="true"
-        className="absolute bottom-1 left-1 top-1 rounded-lg bg-white shadow-sm ring-1 ring-slate-900/5 transition-transform duration-200 ease-(--ease-out-soft)"
+        className="absolute bottom-1 left-1 top-1 rounded-lg bg-surface-raised shadow-sm ring-1 ring-ink/5 transition-transform duration-200 ease-(--ease-out-soft)"
         style={{
           width: `calc((100% - 0.5rem) / ${options.length})`,
           transform: `translateX(${index * 100}%)`,
