@@ -84,6 +84,8 @@ const FLYTHROUGH_BEARING_LOOKAHEAD_M = 30
 // look-ahead smoothing out per-vertex noise. Low enough, combined with the
 // look-ahead, to read as a smooth, gentle turn instead of a dizzying snap.
 const FLYTHROUGH_BEARING_SMOOTHING = 0.05
+// Time constant for gliding from the old path onto a re-fetched one mid-flight.
+const FLYTHROUGH_RETARGET_BLEND_S = 0.7
 
 /** Offset a lng/lat by a distance in meters (small-area equirectangular approximation, fine at city scale). */
 function offsetLngLat(center: [number, number], dxMeters: number, dyMeters: number): [number, number] {
@@ -1071,6 +1073,9 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
   // Last route flown, kept around purely so the "Replay" button can re-run
   // it on demand without needing a fresh origin/destination pick.
   const lastFlythroughCoordsRef = useRef<GeoJSON.Position[] | null>(null)
+  // Path the running flythrough follows; replaced in place when the route
+  // is re-fetched mid-flight.
+  const flythroughTableRef = useRef<RoutePathTable | null>(null)
   const [canReplayFlythrough, setCanReplayFlythrough] = useState(false)
   routeRef.current = route
   originPropRef.current = origin
@@ -1242,12 +1247,13 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
     if (!map || routeCoords.length < 2) return
     cancelAnimationFrame(flythroughRafRef.current)
 
-    const table = buildRoutePathTable(routeCoords, fetchCenterRef.current)
-    if (table.total <= 0) return
+    const initialTable = buildRoutePathTable(routeCoords, fetchCenterRef.current)
+    if (initialTable.total <= 0) return
+    flythroughTableRef.current = initialTable
 
     const durationS = Math.min(
       FLYTHROUGH_MAX_DURATION_S,
-      Math.max(FLYTHROUGH_MIN_DURATION_S, table.total / FLYTHROUGH_TARGET_SPEED_M_S),
+      Math.max(FLYTHROUGH_MIN_DURATION_S, initialTable.total / FLYTHROUGH_TARGET_SPEED_M_S),
     )
 
     lastFlythroughCoordsRef.current = routeCoords
@@ -1257,14 +1263,37 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
     setFlythroughActive(true)
 
     let startTime: number | null = null
+    let lastFrame: number | null = null
     let smoothedBearing = map.getBearing()
+    let table = initialTable
+    // When the route is swapped mid-flight (see retargetFlythrough), the
+    // camera would otherwise jump from the old path to the same fraction of
+    // the new one. Instead the gap becomes an offset that decays to zero, so
+    // the camera glides over onto the new path while progress continues.
+    let offset: [number, number] = [0, 0]
+    let lastXY: [number, number] | null = null
 
     const tick = (now: number) => {
       if (startTime === null) startTime = now
+      const dt = lastFrame === null ? 0 : (now - lastFrame) / 1000
+      lastFrame = now
       const t = Math.min(1, (now - startTime) / (durationS * 1000))
-      const easedDistance = easeInOutQuad(t) * table.total
-      const { xy } = pointAndBearingAtDistance(table, easedDistance)
-      const targetBearing = lookaheadBearingAtDistance(table, easedDistance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
+      const fraction = easeInOutQuad(t)
+
+      const latest = flythroughTableRef.current
+      if (latest && latest !== table) {
+        const nextXY = pointAndBearingAtDistance(latest, fraction * latest.total).xy
+        if (lastXY) offset = [lastXY[0] - nextXY[0], lastXY[1] - nextXY[1]]
+        table = latest
+      }
+      const decay = Math.exp(-dt / FLYTHROUGH_RETARGET_BLEND_S)
+      offset = [offset[0] * decay, offset[1] * decay]
+
+      const distance = fraction * table.total
+      const base = pointAndBearingAtDistance(table, distance).xy
+      const xy: [number, number] = [base[0] + offset[0], base[1] + offset[1]]
+      lastXY = xy
+      const targetBearing = lookaheadBearingAtDistance(table, distance, FLYTHROUGH_BEARING_LOOKAHEAD_M)
       if (targetBearing !== null) {
         smoothedBearing = lerpBearing(smoothedBearing, targetBearing, FLYTHROUGH_BEARING_SMOOTHING)
       }
@@ -1279,6 +1308,18 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
       }
     }
     flythroughRafRef.current = requestAnimationFrame(tick)
+  }
+
+  // A re-fetch of the same origin/destination (time or preference changed)
+  // can return a different path. A running flythrough continues along the
+  // new path from where it is (see the blending in playRouteFlythrough);
+  // either way, Replay uses the latest path.
+  function retargetFlythrough(routeCoords: GeoJSON.Position[]) {
+    if (routeCoords.length < 2) return
+    lastFlythroughCoordsRef.current = routeCoords
+    if (!flythroughActiveRef.current) return
+    const table = buildRoutePathTable(routeCoords, fetchCenterRef.current)
+    if (table.total > 0) flythroughTableRef.current = table
   }
 
   useEffect(() => {
@@ -1500,7 +1541,10 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
       return
     }
     const key = `${origin.lat.toFixed(6)},${origin.lon.toFixed(6)}|${destination.lat.toFixed(6)},${destination.lon.toFixed(6)}`
-    if (key === flythroughKeyRef.current) return
+    if (key === flythroughKeyRef.current) {
+      retargetFlythrough(route.coordinates)
+      return
+    }
     flythroughKeyRef.current = key
 
     const coords = route.coordinates
