@@ -12,6 +12,11 @@ import {
 import { dateAtMinutes } from '../lib/time'
 import { timeStore } from '../lib/timeStore'
 import SunIndicator from '../components/SunIndicator'
+import SegmentedToggle from '../components/ui/SegmentedToggle'
+import Icon from '../components/ui/Icon'
+import FlythroughBar from '../components/map/FlythroughBar'
+import MapHint from '../components/map/MapHint'
+import { OVERLAY_SURFACE } from '../components/map/overlay'
 
 // threebox-plugin (the usual MapLibre+three.js helper) assumes a `map.transform`
 // API that MapLibre GL JS v6's camera/projection refactor removed, so it crashes
@@ -33,6 +38,10 @@ const FETCH_RADIUS_M = 400
 const BUILDING_MASK_MARGIN_M = 80
 
 type CameraMode = 'fly' | 'walk'
+const CAMERA_OPTIONS: { value: CameraMode; label: string }[] = [
+  { value: 'fly', label: 'Free-fly' },
+  { value: 'walk', label: 'Walk' },
+]
 
 const WALK_SPEED_M_S = 6
 const WALK_PITCH = 85
@@ -1623,28 +1632,18 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       <div className="absolute left-4 top-4 z-10 flex flex-col items-start gap-2">
-        <div className="flex overflow-hidden rounded-lg border border-white/20 bg-slate-900/80 text-xs font-medium text-white shadow-lg backdrop-blur">
-          <button
-            type="button"
-            onClick={() => {
-              stopFlythrough()
-              setCameraMode('fly')
-            }}
-            className={`px-3 py-2 transition-colors ${cameraMode === 'fly' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
-          >
-            Free-fly
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              stopFlythrough()
-              setCameraMode('walk')
-            }}
-            className={`px-3 py-2 transition-colors ${cameraMode === 'walk' ? 'bg-teal-500' : 'hover:bg-white/10'}`}
-          >
-            Walk
-          </button>
-        </div>
+        <SegmentedToggle
+          label="Camera mode"
+          tone="overlay"
+          size="sm"
+          className="w-48"
+          value={cameraMode}
+          onChange={(mode) => {
+            stopFlythrough()
+            setCameraMode(mode)
+          }}
+          options={CAMERA_OPTIONS}
+        />
         <SunIndicator bearing={bearing} center={fetchCenterRef.current} />
         {!flythroughActive && canReplayFlythrough && (
           <button
@@ -1653,36 +1652,22 @@ export default function ThreeDView({ origin, destination, route, onMapClick }: T
               const coords = lastFlythroughCoordsRef.current
               if (coords) playRouteFlythrough(coords)
             }}
-            className="rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs font-medium text-white shadow-lg backdrop-blur transition-colors hover:bg-slate-900/90"
+            className={`flex h-9 items-center gap-2 px-3 text-xs font-semibold text-ink-soft transition-colors hover:bg-white ${OVERLAY_SURFACE}`}
           >
-            ↻ Replay flythrough
+            <Icon name="replay" size={16} className="text-brand" />
+            Replay flythrough
           </button>
         )}
       </div>
       {flythroughActive && (
-        <div className="absolute left-1/2 top-4 z-10 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          <div className="flex items-center justify-between gap-3">
-            <span>🎬 Flying the route…</span>
-            <button
-              type="button"
-              onClick={stopFlythrough}
-              className="rounded bg-white/10 px-2 py-1 font-medium transition-colors hover:bg-white/20"
-            >
-              Skip
-            </button>
-          </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/15">
-            <div
-              className="h-full rounded-full bg-teal-400"
-              style={{ width: `${Math.round(flythroughProgress * 100)}%` }}
-            />
-          </div>
+        <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2">
+          <FlythroughBar progress={flythroughProgress} onSkip={stopFlythrough} />
         </div>
       )}
       {cameraMode === 'walk' && !flythroughActive && (
-        <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-white/20 bg-slate-900/80 px-3 py-2 text-xs text-white shadow-lg backdrop-blur">
-          WASD to move · drag to look
-        </div>
+        <MapHint icon="keyboard" className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+          WASD or arrows to move · drag to look around
+        </MapHint>
       )}
     </div>
   )

@@ -6,6 +6,7 @@ import { dateAtMinutes } from '../lib/time'
 import { timeStore } from '../lib/timeStore'
 import { createBuildingShadowLayer } from '../map/buildingShadowLayer'
 import SunIndicator from './SunIndicator'
+import MapHint from './map/MapHint'
 
 const KARLSRUHE_CENTER: [number, number] = [8.4037, 49.0069]
 const KARLSRUHE_CENTER_LATLON: LatLon = { lat: KARLSRUHE_CENTER[1], lon: KARLSRUHE_CENTER[0] }
@@ -485,14 +486,24 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
       const nextStop = vehicle.calls[1]?.stop_name ?? '?'
       const stops = `${prevStop} → ${nextStop}`
 
-      const html = `<div style="font:12px/1.5 system-ui,sans-serif;">
-        <div style="font-weight:600;">${line}</div>
-        <div>${route}</div>
-        <div>Trip ${tripNumber}</div>
-        <div>${stops}</div>
-      </div>`
+      // Built with textContent rather than an HTML string: line/stop names
+      // come from the backend's transit feed and must not be parsed as markup.
+      const content = document.createElement('div')
+      content.className = 'flex flex-col gap-0.5 text-xs leading-snug'
+      const rows: [string, string][] = [
+        [line, 'text-sm font-semibold text-ink'],
+        [route, 'text-ink-soft'],
+        [stops, 'text-ink-muted'],
+        [`Trip ${tripNumber}`, 'text-ink-muted tabular-nums'],
+      ]
+      for (const [text, className] of rows) {
+        const row = document.createElement('div')
+        row.className = className
+        row.textContent = text
+        content.appendChild(row)
+      }
 
-      popup.setLngLat((feature.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(html).addTo(map)
+      popup.setLngLat((feature.geometry as GeoJSON.Point).coordinates as [number, number]).setDOMContent(content).addTo(map)
     }
 
     const onMouseLeave = () => {
@@ -520,9 +531,9 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
         <SunIndicator bearing={bearing} center={KARLSRUHE_CENTER_LATLON} />
       </div>
       {shadowZoomHint && (
-        <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full bg-slate-900/80 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur">
+        <MapHint icon="zoom" className="absolute left-1/2 top-4 z-10 -translate-x-1/2">
           Zoom in to see building shadows
-        </div>
+        </MapHint>
       )}
     </div>
   )

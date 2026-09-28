@@ -2,6 +2,7 @@ import * as SunCalc from 'suncalc'
 import type { LatLon } from '../lib/api'
 import { useDisplayTime } from '../hooks/useTime'
 import { dateAtMinutes } from '../lib/time'
+import { OVERLAY_SURFACE } from './map/overlay'
 
 interface SunIndicatorProps {
   bearing: number
@@ -36,13 +37,16 @@ export default function SunIndicator({ bearing, center }: SunIndicatorProps) {
 
   return (
     <div
-      className="flex flex-col items-center gap-1 rounded-xl border border-slate-200/70 bg-white/85 px-2 py-2 shadow-md backdrop-blur-sm"
+      role="img"
+      aria-label={isUp ? `Sun ${Math.round(altitude)} degrees high in the ${compassLabel(azimuth)}` : 'Sun below the horizon'}
+      className={`flex flex-col items-center gap-1.5 px-2 pb-2 pt-2 ${OVERLAY_SURFACE}`}
       title={`Sun: ${Math.round(azimuth)}° azimuth, ${Math.round(altitude)}° elevation`}
     >
       <div
-        className="relative rounded-full border border-slate-300 bg-sky-50"
+        className="relative rounded-full bg-gradient-to-b from-sky-50 to-sky-100 ring-1 ring-sky-200"
         style={{ width: WIDGET_SIZE, height: WIDGET_SIZE }}
       >
+        <div className="absolute inset-[22%] rounded-full ring-1 ring-sky-200/80" aria-hidden="true" />
         {/* Rotates opposite the map bearing so "up" always tracks true north,
             keeping the sun dot's screen position correct as the user rotates
             the map (bearing is measured counter-clockwise from north). */}
@@ -50,7 +54,7 @@ export default function SunIndicator({ bearing, center }: SunIndicatorProps) {
           className="absolute inset-0"
           style={{ transform: `rotate(${-bearing}deg)` }}
         >
-          <span className="absolute left-1/2 top-0.5 -translate-x-1/2 text-[9px] font-semibold text-slate-400">
+          <span className="absolute left-1/2 top-0.5 -translate-x-1/2 text-[9px] font-semibold text-ink-muted">
             N
           </span>
           <div
@@ -65,7 +69,7 @@ export default function SunIndicator({ bearing, center }: SunIndicatorProps) {
           />
         </div>
       </div>
-      <span className="text-[10px] font-medium leading-none text-slate-500">
+      <span className="text-[11px] font-medium leading-none tabular-nums text-ink-soft">
         {isUp ? `${Math.round(altitude)}° ${compassLabel(azimuth)}` : 'below horizon'}
       </span>
     </div>
