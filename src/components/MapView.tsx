@@ -180,6 +180,8 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
   // same origin/destination (time or preference changes) returns a route
   // with the same endpoints and must not yank the camera around again.
   const lastFittedRouteKeyRef = useRef<string | null>(null)
+  // Set once our sources/layers exist (end of the map's 'load' handler).
+  const styleReadyRef = useRef(false)
   const [bearing, setBearing] = useState(0)
   const [shadowZoomHint, setShadowZoomHint] = useState(true)
 
@@ -314,12 +316,14 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
       map.addLayer(shadows.layer, firstBuildingLayer?.id ?? ROUTE_LAYER_ID)
       applySun()
       loadShadowBuildings()
+      styleReadyRef.current = true
     })
     map.on('moveend', loadShadowBuildings)
 
     return () => {
       disposed = true
       unsubscribeTime()
+      styleReadyRef.current = false
       map.remove()
       mapRef.current = null
     }
@@ -384,12 +388,19 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
             (b, c) => b.extend(c),
             new maplibregl.LngLatBounds(coords[0], coords[0]),
           )
-          map.fitBounds(bounds, { padding: 80, maxZoom: 17, duration: 500 })
+          // On phones the bottom sheet (peek) and the sun widget cover the
+          // bottom and top of the map; keep the route clear of both.
+          const compact = map.getContainer().clientWidth < 768
+          const padding = compact ? { top: 130, bottom: 190, left: 40, right: 40 } : 80
+          map.fitBounds(bounds, { padding, maxZoom: 17, duration: 500 })
         }
       }
     }
 
-    if (map.isStyleLoaded()) {
+    // Not map.isStyleLoaded(): that is also false whenever any source is
+    // still fetching tiles, long after 'load' — and 'load' never fires again,
+    // so the route would silently never be drawn.
+    if (styleReadyRef.current) {
       applyRoute()
     } else {
       map.once('load', applyRoute)
@@ -531,7 +542,7 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
         <SunIndicator bearing={bearing} center={KARLSRUHE_CENTER_LATLON} />
       </div>
       {shadowZoomHint && (
-        <MapHint icon="zoom" className="absolute left-1/2 top-4 z-10 -translate-x-1/2">
+        <MapHint icon="zoom" className="absolute left-1/2 top-[8.25rem] z-10 -translate-x-1/2 md:top-4">
           Zoom in to see building shadows
         </MapHint>
       )}

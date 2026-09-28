@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
+import { useBottomSheet } from '../hooks/useBottomSheet'
+import { formatDistance } from '../lib/format'
 import type { LatLon, RouteResponse, WeatherSnapshot } from '../lib/api'
 import { buildTurnByTurn } from '../lib/directions'
 import SegmentedToggle from './ui/SegmentedToggle'
@@ -46,7 +48,8 @@ const VIEW_OPTIONS = [
 
 export default function Sidebar(props: SidebarProps) {
   const { route, loading, error } = props
-  const [mobileOpen, setMobileOpen] = useState(false)
+  // Mobile peek shows the header, plus a one-line route summary once a route exists.
+  const sheet = useBottomSheet(route ? 156 : 120)
   const steps = useMemo(() => (route ? buildTurnByTurn(route.geometry) : []), [route])
 
   const showError = Boolean(error) && !loading
@@ -63,16 +66,17 @@ export default function Sidebar(props: SidebarProps) {
   return (
     <aside
       aria-label="Route planner"
-      className={`fixed inset-x-0 bottom-0 z-20 flex w-full flex-col overflow-y-auto rounded-t-[1.25rem] bg-surface px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-(--shadow-sheet) transition-[max-height] duration-300 ease-(--ease-out-soft) md:static md:h-full md:max-h-none md:w-[400px] md:shrink-0 md:rounded-none md:border-r md:border-line md:pt-5 md:shadow-none ${
-        mobileOpen ? 'max-h-[85dvh]' : 'max-h-[7.5rem]'
+      style={sheet.style}
+      className={`fixed inset-x-0 bottom-0 z-20 flex max-h-(--sheet-h) w-full flex-col overscroll-contain rounded-t-[1.25rem] bg-surface px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-(--shadow-sheet) transition-[max-height] duration-300 ease-(--ease-out-soft) md:static md:h-full md:max-h-none md:w-[400px] md:shrink-0 md:rounded-none md:border-r md:border-line md:pt-5 md:shadow-none ${
+        sheet.open ? 'overflow-y-auto' : 'overflow-hidden md:overflow-y-auto'
       }`}
     >
       <button
         type="button"
-        onClick={() => setMobileOpen((v) => !v)}
-        aria-label={mobileOpen ? 'Collapse route planner' : 'Expand route planner'}
-        aria-expanded={mobileOpen}
-        className="flex h-6 shrink-0 items-center justify-center md:hidden"
+        {...sheet.handleProps}
+        aria-label={sheet.open ? 'Collapse route planner' : 'Expand route planner'}
+        aria-expanded={sheet.open}
+        className="sticky top-0 z-10 -mx-5 flex h-7 shrink-0 touch-none items-center justify-center bg-surface md:hidden"
       >
         <span className="h-1.5 w-10 rounded-full bg-slate-300" />
       </button>
@@ -88,6 +92,15 @@ export default function Sidebar(props: SidebarProps) {
             className="w-24 shrink-0"
           />
         </BrandHeader>
+        {route && !sheet.open && (
+          <p className="mt-3 flex items-center gap-2 text-sm text-ink-soft md:hidden">
+            <span className="font-semibold text-brand tabular-nums">{Math.round(route.shade_pct * 100)}% shade</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">{formatDistance(route.distance_m)}</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">{Math.round(route.estimated_minutes)} min</span>
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col gap-4 pb-5">
@@ -97,7 +110,11 @@ export default function Sidebar(props: SidebarProps) {
           onOriginChange={props.onOriginChange}
           onDestinationChange={props.onDestinationChange}
           pickMode={props.pickMode}
-          onPickModeChange={props.onPickModeChange}
+          onPickModeChange={(mode) => {
+            // On phones the expanded sheet covers the map; get out of the way.
+            if (mode) sheet.setOpen(false)
+            props.onPickModeChange(mode)
+          }}
         />
         {notice}
       </div>
