@@ -62,7 +62,12 @@ export interface TransitNearbyResponse {
   vehicles: TransitVehicle[]
 }
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000'
+// On an https page the browser blocks calls to a plain-http backend (mixed
+// content), so there the backend is reached through the same origin: nginx
+// proxies /shadeka-api/ to it (see deploy/enable-https.sh). Plain-http
+// access keeps using the backend address directly.
+const API_URL =
+  window.location.protocol === 'https:' ? '/shadeka-api' : (import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000')
 
 export async function fetchRoute(
   origin: LatLon,
