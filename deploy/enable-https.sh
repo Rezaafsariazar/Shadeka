@@ -38,6 +38,10 @@ server {
 
     # The backend, same-origin, so the https page never makes a mixed-content call.
     location /shadeka-api/ {
+        # Cross-origin access, for the frontend hosted on Cloudflare Pages.
+        # Drop any CORS header the backend adds so it isn't sent twice.
+        proxy_hide_header Access-Control-Allow-Origin;
+        add_header Access-Control-Allow-Origin * always;
         proxy_pass $BACKEND/;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;

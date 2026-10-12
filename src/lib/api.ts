@@ -62,12 +62,17 @@ export interface TransitNearbyResponse {
   vehicles: TransitVehicle[]
 }
 
-// On an https page the browser blocks calls to a plain-http backend (mixed
-// content), so there the backend is reached through the same origin: nginx
-// proxies /shadeka-api/ to it (see deploy/enable-https.sh). Plain-http
-// access keeps using the backend address directly.
+// An https page can't call a plain-http backend (mixed content), so on https
+// the backend is reached over https instead:
+//  - VITE_API_URL_HTTPS, when set at build time (the Cloudflare Pages build
+//    points it at the server's https proxy, which allows cross-origin calls);
+//  - otherwise same-origin /shadeka-api, which nginx on the server proxies
+//    (see deploy/enable-https.sh).
+// Plain-http access keeps using VITE_API_URL / the original address.
 const API_URL =
-  window.location.protocol === 'https:' ? '/shadeka-api' : (import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000')
+  window.location.protocol === 'https:'
+    ? (import.meta.env.VITE_API_URL_HTTPS ?? '/shadeka-api')
+    : (import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000')
 
 export async function fetchRoute(
   origin: LatLon,
