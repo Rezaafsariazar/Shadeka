@@ -24,4 +24,5 @@ echo "==> Publishing"
 npx --yes wrangler pages deploy dist --project-name "$PROJECT" --branch main --commit-dirty=true
 
 echo
-echo "Done. Open: https://$PROJECT.pages.dev/"
+echo "==> Your site address(es) (Cloudflare may have chosen a different name if '$PROJECT' was taken):"
+npx --yes wrangler pages project list 2>/dev/null | grep -i -E "$PROJECT|pages.dev" || npx --yes wrangler pages project list
