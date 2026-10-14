@@ -6,6 +6,10 @@
 set -euo pipefail
 
 PROJECT="${PROJECT:-shadeka}"
+# Cloudflare treats a deploy as "Production" only when its branch matches the project's
+# production branch (it picks the checked-out git branch when it creates the project),
+# otherwise it is a Preview on <branch>.<project>.pages.dev. Override with BRANCH=...
+BRANCH="${BRANCH:-$(git -C "$(dirname "$0")/.." rev-parse --abbrev-ref HEAD)}"
 # Where the browser reaches the backend (the server's https proxy; see enable-https.sh).
 API="${API:-https://92-5-24-223.sslip.io/shadeka-api}"
 cd "$(dirname "$0")/.."
@@ -14,14 +18,14 @@ echo "==> Logging in to Cloudflare (skipped if already logged in)"
 npx --yes wrangler whoami >/dev/null 2>&1 || npx --yes wrangler login
 
 echo "==> Creating the Pages project '$PROJECT' (skipped if it exists)"
-npx --yes wrangler pages project create "$PROJECT" --production-branch main >/dev/null 2>&1 || true
+npx --yes wrangler pages project create "$PROJECT" --production-branch "$BRANCH" >/dev/null 2>&1 || true
 
 echo "==> Building"
 npm install
 VITE_API_URL_HTTPS="$API" npm run build
 
 echo "==> Publishing"
-npx --yes wrangler pages deploy dist --project-name "$PROJECT" --branch main --commit-dirty=true
+npx --yes wrangler pages deploy dist --project-name "$PROJECT" --branch "$BRANCH" --commit-dirty=true
 
 echo
 echo "==> Your site address(es) (Cloudflare may have chosen a different name if '$PROJECT' was taken):"
