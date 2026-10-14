@@ -1,0 +1,39 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+        env:
+          # https page -> backend must be reached over https (nginx proxy on the server)
+          VITE_API_URL_HTTPS: https://92-5-24-223.sslip.io/shadeka-api
+
+      # A deploy counts as "Production" only if --branch equals the Pages
+      # project's production branch. Set repo variable PAGES_PRODUCTION_BRANCH
+      # (Settings > Secrets and variables > Actions > Variables) to match it;
+      # falls back to the pushed branch name.
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=shadeka --branch=${{ vars.PAGES_PRODUCTION_BRANCH || github.ref_name }} --commit-dirty=true
