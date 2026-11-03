@@ -5,6 +5,7 @@ import { fetchBuildingsNearby, fetchTransitNearby, type LatLon, type TransitVehi
 import { dateAtMinutes } from '../lib/time'
 import { timeStore } from '../lib/timeStore'
 import { createBuildingShadowLayer } from '../map/buildingShadowLayer'
+import { applyDarkBasemap, type MapTheme } from '../map/darkBasemap'
 import SunIndicator from './SunIndicator'
 import MapHint from './map/MapHint'
 
@@ -167,9 +168,13 @@ interface MapViewProps {
   destination: LatLon | null
   route: GeoJSON.LineString | null
   onMapClick: (point: LatLon) => void
+  theme?: MapTheme
 }
 
-export default function MapView({ origin, destination, route, onMapClick }: MapViewProps) {
+// On the dark basemap a near-black, stronger shadow keeps contrast.
+const HUD_SHADOW = { rgb: [0, 0, 0] as [number, number, number], alpha: 0.5 }
+
+export default function MapView({ origin, destination, route, onMapClick, theme = 'light' }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const originMarkerRef = useRef<maplibregl.Marker | null>(null)
@@ -204,7 +209,7 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
       onMapClickRef.current({ lat: e.lngLat.lat, lon: e.lngLat.lng })
     })
 
-    const shadows = createBuildingShadowLayer(KARLSRUHE_CENTER_LATLON)
+    const shadows = createBuildingShadowLayer(KARLSRUHE_CENTER_LATLON, theme === 'hud' ? HUD_SHADOW : undefined)
 
     // Shadows follow the shared smoothed time every frame it changes — a
     // uniform update in the layer, no React re-render.
@@ -259,6 +264,8 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
     }
 
     map.on('load', () => {
+      // Before our own layers, so only the basemap is recolored.
+      if (theme === 'hud') applyDarkBasemap(map)
       map.addSource(ROUTE_SOURCE_ID, {
         type: 'geojson',
         lineMetrics: true,
@@ -327,7 +334,7 @@ export default function MapView({ origin, destination, route, onMapClick }: MapV
       map.remove()
       mapRef.current = null
     }
-  }, [])
+  }, [theme])
 
   useEffect(() => {
     const map = mapRef.current

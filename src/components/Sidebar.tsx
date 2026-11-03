@@ -4,6 +4,7 @@ import { formatDistance } from '../lib/format'
 import type { LatLon, RouteResponse, WeatherSnapshot } from '../lib/api'
 import { buildTurnByTurn } from '../lib/directions'
 import SegmentedToggle from './ui/SegmentedToggle'
+import Icon from './ui/Icon'
 import BrandHeader from './sidebar/BrandHeader'
 import RouteInputs from './sidebar/RouteInputs'
 import EmptyState from './sidebar/EmptyState'
@@ -83,6 +84,14 @@ export default function Sidebar(props: SidebarProps) {
 
       <div className="pb-5">
         <BrandHeader>
+          <a
+            href="#/command"
+            title="Open the command center"
+            aria-label="Open the command center"
+            className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-(--radius-control) border border-line text-ink-soft transition-colors hover:border-brand-accent hover:bg-brand-soft hover:text-brand-ink"
+          >
+            <Icon name="dashboard" size={18} />
+          </a>
           <SegmentedToggle
             label="Map view"
             size="sm"
@@ -94,7 +103,7 @@ export default function Sidebar(props: SidebarProps) {
         </BrandHeader>
         {route && !sheet.open && (
           <p className="mt-3 flex items-center gap-2 text-sm text-ink-soft md:hidden">
-            <span className="font-semibold text-brand tabular-nums">{Math.round(route.shade_pct * 100)}% shade</span>
+            <span className="font-semibold text-brand-ink tabular-nums">{Math.round(route.shade_pct * 100)}% shade</span>
             <span aria-hidden="true">·</span>
             <span className="tabular-nums">{formatDistance(route.distance_m)}</span>
             <span aria-hidden="true">·</span>

@@ -14,7 +14,7 @@ export default function MapHint({ icon, children, className = '' }: MapHintProps
       role="status"
       className={`pointer-events-none flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium text-ink-soft animate-enter ${OVERLAY_SURFACE} ${className}`}
     >
-      <Icon name={icon} size={14} className="text-brand" />
+      <Icon name={icon} size={14} className="text-brand-ink" />
       {children}
     </div>
   )

@@ -35,7 +35,7 @@ export default function TimeControl() {
           {formatMinutes(minutes)}
         </output>
         <div className="flex items-center gap-2">
-          <div role="group" aria-label="Time-lapse speed" className="flex rounded-lg bg-slate-100 p-0.5">
+          <div role="group" aria-label="Time-lapse speed" className="flex rounded-lg bg-surface-muted p-0.5">
             {SPEEDS.map((s) => (
               <button
                 key={s}
@@ -44,7 +44,7 @@ export default function TimeControl() {
                 aria-label={`${s} times speed`}
                 onClick={() => timeStore.setSpeed(s)}
                 className={`h-7 min-w-8 rounded-md px-1.5 text-xs font-semibold tabular-nums transition-colors duration-200 ${
-                  speed === s ? 'bg-white text-ink shadow-sm' : 'text-ink-muted hover:text-ink-soft'
+                  speed === s ? 'bg-surface-raised text-ink shadow-sm' : 'text-ink-muted hover:text-ink-soft'
                 }`}
               >
                 {s}×

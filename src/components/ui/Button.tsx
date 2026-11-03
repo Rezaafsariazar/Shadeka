@@ -8,8 +8,8 @@ const BASE =
 
 const VARIANTS: Record<Variant, string> = {
   primary: 'rounded-(--radius-control) bg-brand text-white shadow-sm hover:bg-brand-hover',
-  secondary: 'rounded-(--radius-control) border border-line bg-surface text-ink-soft hover:border-slate-300 hover:bg-surface-sunken',
-  ghost: 'rounded-(--radius-control) text-brand hover:bg-brand-soft',
+  secondary: 'rounded-(--radius-control) border border-line bg-surface text-ink-soft hover:border-ink-muted/40 hover:bg-surface-sunken',
+  ghost: 'rounded-(--radius-control) text-brand-ink hover:bg-brand-soft',
   icon: 'rounded-(--radius-control) border border-line bg-surface text-ink-soft hover:bg-surface-sunken',
 }
 

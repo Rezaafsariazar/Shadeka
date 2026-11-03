@@ -25,11 +25,11 @@ export default function AddressField({ label, markerColor, value, onChange, pick
         {label}
       </label>
       <div
-        className={`flex h-11 items-center gap-2 rounded-(--radius-control) border bg-surface pl-3 pr-1 transition-[border-color,box-shadow] duration-200 focus-within:border-brand-accent focus-within:ring-4 focus-within:ring-teal-500/15 ${
-          field.error ? 'border-rose-300' : 'border-line'
+        className={`flex h-11 items-center gap-2 rounded-(--radius-control) border bg-surface pl-3 pr-1 transition-[border-color,box-shadow] duration-200 focus-within:border-brand-accent focus-within:ring-4 focus-within:ring-brand-accent/15 ${
+          field.error ? 'border-danger-line' : 'border-line'
         }`}
       >
-        <span className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white" style={{ backgroundColor: markerColor }} />
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-surface" style={{ backgroundColor: markerColor }} />
         <input
           id={id}
           type="text"
@@ -85,7 +85,7 @@ export default function AddressField({ label, markerColor, value, onChange, pick
       </div>
 
       {field.error && (
-        <p className="mt-1.5 flex items-start gap-1.5 text-xs text-rose-700" role="alert">
+        <p className="mt-1.5 flex items-start gap-1.5 text-xs text-danger-ink" role="alert">
           <Icon name="alert" size={14} className="mt-px shrink-0" />
           {field.error}
         </p>

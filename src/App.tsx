@@ -1,173 +1,21 @@
-import { useEffect, useState } from 'react'
-import Sidebar from './components/Sidebar'
-import MapView from './components/MapView'
-import ThreeDView from './three/ThreeDView'
-import { fetchRoute, fetchWeatherAtHour, type LatLon, type RouteResponse, type WeatherSnapshot } from './lib/api'
-import { isoAtMinutes } from './lib/time'
-import { useSettledTime } from './hooks/useTime'
-import { useDebouncedValue } from './hooks/useDebouncedValue'
+import { lazy, Suspense } from 'react'
+import { usePlanner } from './hooks/usePlanner'
+import { useHashRoute } from './hooks/useHashRoute'
+import PlannerPage from './pages/PlannerPage'
 
-const KARLSRUHE_CENTER: LatLon = { lat: 49.0069, lon: 8.4037 }
-
-// Real weather is refreshed on this interval while the toggle is on — no
-// point polling more often than a weather API's own data actually changes.
-const WEATHER_REFRESH_MS = 15 * 60 * 1000
+// Loaded on demand so the default planner page doesn't pay for it.
+const CommandCenterPage = lazy(() => import('./pages/CommandCenterPage'))
 
 export default function App() {
-  const [origin, setOrigin] = useState<LatLon | null>(null)
-  const [destination, setDestination] = useState<LatLon | null>(null)
-  const [shadePref, setShadePref] = useState(50)
-  // The live time of day lives in timeStore (see lib/timeStore.ts) so the
-  // slider, sun and shadows update every frame without re-rendering the app.
-  // Network work only follows the settled value.
-  const settledMinutes = useSettledTime()
-  const debouncedShadePref = useDebouncedValue(shadePref, 300)
-  const [pickMode, setPickMode] = useState<'origin' | 'destination' | null>('origin')
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
+  const planner = usePlanner()
+  const page = useHashRoute()
 
-  const [route, setRoute] = useState<RouteResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // Bumped by "Try again" to re-run the route fetch with unchanged inputs.
-  const [retryCount, setRetryCount] = useState(0)
-
-  const [showWeather, setShowWeather] = useState(false)
-  const [weather, setWeather] = useState<WeatherSnapshot | null>(null)
-  const [weatherLoading, setWeatherLoading] = useState(false)
-  const [weatherError, setWeatherError] = useState<string | null>(null)
-
-  function handleMapClick(point: LatLon) {
-    if (pickMode === 'origin') {
-      setOrigin(point)
-      setPickMode('destination')
-    } else if (pickMode === 'destination') {
-      setDestination(point)
-      setPickMode(null)
-      // Picking a destination on the 2D map completes a route — jump to 3D
-      // to show it off with the flythrough, rather than leaving the user to
-      // switch views manually to see it.
-      setViewMode('3d')
-    }
+  if (page === 'command') {
+    return (
+      <Suspense fallback={<div className="h-screen w-screen bg-[#070b10]" />}>
+        <CommandCenterPage planner={planner} />
+      </Suspense>
+    )
   }
-
-  // Setting a point from the address fields also advances the pick-on-map
-  // flow, so its "click the map to set…" hint doesn't linger for a point
-  // that's already set. Functional updates: address fields commit on a
-  // short blur delay, so these can run from a closure a render behind.
-  function handleOriginChange(point: LatLon | null) {
-    setOrigin(point)
-    if (point) setPickMode((mode) => (mode === 'origin' ? (destination ? null : 'destination') : mode))
-  }
-
-  function handleDestinationChange(point: LatLon | null) {
-    setDestination(point)
-    if (point) setPickMode((mode) => (mode === 'destination' ? null : mode))
-  }
-
-  useEffect(() => {
-    if (!origin || !destination) {
-      setRoute(null)
-      setError(null)
-      return
-    }
-
-    // Time and preference are already debounced/settled above, so this runs
-    // once per settled change, not once per slider tick.
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-
-    fetchRoute(origin, destination, debouncedShadePref, isoAtMinutes(settledMinutes))
-      .then((data) => {
-        if (!cancelled) setRoute(data)
-      })
-      .catch((err: Error) => {
-        if (!cancelled) {
-          setRoute(null)
-          setError(err.message)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [origin, destination, debouncedShadePref, settledMinutes, retryCount])
-
-  useEffect(() => {
-    if (!showWeather) return
-
-    const point = origin ?? KARLSRUHE_CENTER
-    let cancelled = false
-
-    function load() {
-      setWeatherLoading(true)
-      setWeatherError(null)
-      fetchWeatherAtHour(point, settledMinutes / 60)
-        .then((data) => {
-          if (!cancelled) setWeather(data)
-        })
-        .catch((err: Error) => {
-          if (!cancelled) setWeatherError(err.message)
-        })
-        .finally(() => {
-          if (!cancelled) setWeatherLoading(false)
-        })
-    }
-
-    // Short debounce so a burst of origin changes (swap, typing) coalesces.
-    const timer = setTimeout(load, 300)
-    const interval = setInterval(load, WEATHER_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-      clearInterval(interval)
-    }
-  }, [showWeather, origin, settledMinutes])
-
-  return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar
-        origin={origin}
-        destination={destination}
-        onOriginChange={handleOriginChange}
-        onDestinationChange={handleDestinationChange}
-        shadePref={shadePref}
-        onShadePrefChange={setShadePref}
-        settledMinutes={settledMinutes}
-        route={route}
-        loading={loading}
-        error={error}
-        onRetry={() => setRetryCount((n) => n + 1)}
-        pickMode={pickMode}
-        onPickModeChange={setPickMode}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        showWeather={showWeather}
-        onShowWeatherChange={setShowWeather}
-        weather={weather}
-        weatherLoading={weatherLoading}
-        weatherError={weatherError}
-      />
-      <main className="relative flex-1">
-        {viewMode === '2d' ? (
-          <MapView
-            origin={origin}
-            destination={destination}
-            route={route?.geometry ?? null}
-            onMapClick={handleMapClick}
-          />
-        ) : (
-          <ThreeDView
-            origin={origin}
-            destination={destination}
-            route={route?.geometry ?? null}
-            onMapClick={handleMapClick}
-          />
-        )}
-      </main>
-    </div>
-  )
+  return <PlannerPage planner={planner} />
 }

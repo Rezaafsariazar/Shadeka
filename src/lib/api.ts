@@ -62,7 +62,17 @@ export interface TransitNearbyResponse {
   vehicles: TransitVehicle[]
 }
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000'
+// An https page can't call a plain-http backend (mixed content), so on https
+// the backend is reached over https instead:
+//  - VITE_API_URL_HTTPS, when set at build time (the Cloudflare Pages build
+//    points it at the server's https proxy, which allows cross-origin calls);
+//  - otherwise same-origin /shadeka-api, which nginx on the server proxies
+//    (see deploy/enable-https.sh).
+// Plain-http access keeps using VITE_API_URL / the original address.
+const API_URL =
+  window.location.protocol === 'https:'
+    ? (import.meta.env.VITE_API_URL_HTTPS ?? '/shadeka-api')
+    : (import.meta.env.VITE_API_URL ?? 'http://92.5.24.223:8000')
 
 export async function fetchRoute(
   origin: LatLon,
@@ -250,4 +260,54 @@ export async function fetchWeatherAtHour(point: LatLon, hour: number): Promise<W
     conditionLabel: condition.label,
     conditionKind: condition.kind,
   }
+}
+
+export interface HourlyConditions {
+  hour: number
+  temperatureC: number
+  apparentC: number
+  humidityPct: number
+  windKmh: number
+  uvIndex: number
+  cloudCoverPct: number
+  precipitationMm: number
+  conditionLabel: string
+  conditionKind: WeatherKind
+}
+
+/**
+ * Today's full hourly forecast at `point` (Open-Meteo, no key): one request
+ * covers every hour, so views that follow the time slider can read the
+ * selected hour locally instead of re-fetching.
+ */
+export async function fetchDayForecast(point: LatLon): Promise<HourlyConditions[]> {
+  const params = new URLSearchParams({
+    latitude: String(point.lat),
+    longitude: String(point.lon),
+    hourly:
+      'temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,uv_index,cloud_cover,precipitation,weather_code',
+    timezone: 'auto',
+    forecast_days: '1',
+  })
+  const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`)
+  if (!res.ok) {
+    throw new Error(`Forecast request failed: ${res.status} ${res.statusText}`)
+  }
+  const h = (await res.json()).hourly
+  return (h.time as string[]).map((time, i) => {
+    const condition = WMO_CONDITIONS[h.weather_code[i]] ?? { label: 'Unknown', kind: 'cloudy' as const }
+    return {
+      // "YYYY-MM-DDTHH:MM" in the location's own timezone (see fetchWeatherAtHour).
+      hour: Number(time.slice(11, 13)),
+      temperatureC: h.temperature_2m[i],
+      apparentC: h.apparent_temperature[i],
+      humidityPct: h.relative_humidity_2m[i],
+      windKmh: h.wind_speed_10m[i],
+      uvIndex: h.uv_index[i],
+      cloudCoverPct: h.cloud_cover[i],
+      precipitationMm: h.precipitation[i],
+      conditionLabel: condition.label,
+      conditionKind: condition.kind,
+    }
+  })
 }

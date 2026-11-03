@@ -19,7 +19,7 @@ export default function PreferenceSlider({ value, onChange }: PreferenceSliderPr
   return (
     <Section
       title="Route preference"
-      aside={<span className="rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand">{label}</span>}
+      aside={<span className="rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand-ink">{label}</span>}
     >
       <input
         type="range"
