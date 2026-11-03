@@ -11,7 +11,7 @@ PROJECT="${PROJECT:-shadeka}"
 # otherwise it is a Preview on <branch>.<project>.pages.dev. Override with BRANCH=...
 BRANCH="${BRANCH:-$(git -C "$(dirname "$0")/.." rev-parse --abbrev-ref HEAD)}"
 # Where the browser reaches the backend (the server's https proxy; see enable-https.sh).
-API="${API:-https://92-5-24-223.sslip.io/shadeka-api}"
+API="${API:-https://api.rezaafsariazar.com}"
 cd "$(dirname "$0")/.."
 
 echo "==> Logging in to Cloudflare (skipped if already logged in)"
